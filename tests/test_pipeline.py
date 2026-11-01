@@ -13,6 +13,7 @@ from imaging import blurred, save_jpeg, varied_scene
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, ConfigError, ShortlistCfg, Theme, TripConfig
 from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice
+from photo_chooser.judge.prompts import JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import JudgeItem, JudgeOutput, ScreenItem, ScreenMatch, ScreenOutput
 from photo_chooser.models import AlbumRef
 from photo_chooser.pipeline import RunOptions, run
@@ -162,7 +163,7 @@ def test_screen_runs_once_for_all_themes(tmp_path):
         assert outcome.error is None
         assert len(_files(outcome.report_path.parent / "feed")) == 3
     report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert "claude-haiku-5-5" in report and "screen-1, judge-1" in report
+    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}, {JUDGE_PROMPT_VERSION}" in report
     spent = cache.album_spend("ALB")
     assert spent == pytest.approx(12 * (20_000 * 0.10 / 1e6 + 2_000 * 0.50 / 1e6))
     last_report = result.themes[-1].report_path.read_text(encoding="utf-8")  # накоплено на момент отчёта

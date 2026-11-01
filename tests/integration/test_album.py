@@ -12,6 +12,7 @@ import pytest
 
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme, TripConfig
+from photo_chooser.judge.prompts import JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import make_client
 from photo_chooser.library.photokit_library import PhotoKitLibrary
 from photo_chooser.pipeline import RunOptions, run
@@ -124,6 +125,6 @@ def test_haiku_run_on_test_album(library, tmp_path):
     outcome = result.themes[0]
     assert outcome.error is None
     report = outcome.report_path.read_text(encoding="utf-8")
-    assert "claude-haiku-5-5" in report and "screen-1, judge-1" in report
+    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}, {JUDGE_PROMPT_VERSION}" in report
     assert result.album_spend_usd > 0
     assert cache.album_spend(library.find_album(ALBUM).uuid) == pytest.approx(result.album_spend_usd)
