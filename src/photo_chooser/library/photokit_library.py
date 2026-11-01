@@ -121,12 +121,13 @@ class PhotoKitLibrary:
     def find_album(self, title: str) -> AlbumRef:
         return resolve_album(title, self.albums())
 
-    def assets(self, album: AlbumRef) -> list[Asset]:
+    def assets(self, album: AlbumRef, *, album_order: bool = False) -> list[Asset]:
         found = Photos.PHAssetCollection.fetchAssetCollectionsWithLocalIdentifiers_options_([album.uuid], None)
         if found.count() == 0:
             return []
         options = self._image_options()
-        options.setSortDescriptors_([Foundation.NSSortDescriptor.sortDescriptorWithKey_ascending_("creationDate", True)])
+        if not album_order:  # без sortDescriptors PhotoKit отдаёт снимки в порядке альбома
+            options.setSortDescriptors_([Foundation.NSSortDescriptor.sortDescriptorWithKey_ascending_("creationDate", True)])
         result = Photos.PHAsset.fetchAssetsInAssetCollection_options_(found.objectAtIndex_(0), options)
         out = []
         for i in range(result.count()):

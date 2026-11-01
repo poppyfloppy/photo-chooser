@@ -35,7 +35,8 @@ class FakeLibrary:
     def find_album(self, title: str) -> AlbumRef:
         return resolve_album(title, self._albums)
 
-    def assets(self, album: AlbumRef) -> list[Asset]:
+    def assets(self, album: AlbumRef, *, album_order: bool = False) -> list[Asset]:
+        # в фейке список и есть порядок альбома; сортировку по дате делает вызывающий код
         return list(self._assets.get(album.uuid, []))
 
     def preview(self, asset: Asset, long_side: int) -> Path | None:

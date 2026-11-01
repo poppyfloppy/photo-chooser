@@ -1,7 +1,7 @@
 """Конфигурация: общий config.yaml, файл поездки trip.yaml и темы."""
 
 import hashlib
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -171,11 +171,23 @@ class Thresholds(_Strict):
     live_frame_margin: float = 0.15
 
 
+class StyleCfg(_Strict):
+    """Стиль страницы Instagram (SPEC FR-11). Альбомы задаёт пользователь в config.yaml."""
+
+    albums: list[str] = Field(default_factory=list)
+    since: date = date(2018, 1, 1)
+    screenshots_album: str | None = None
+    sample: int = Field(default=40, ge=1)
+    model: str = "claude-opus-5-5"
+    reference_images: int = Field(default=2, ge=0)
+
+
 class AppConfig(_Strict):
     output_dir: Path = Field(default=Path("~/Pictures/photo-chooser"), validate_default=True)
     shortlist: ShortlistCfg = Field(default_factory=ShortlistCfg)
     cloud: CloudCfg = Field(default_factory=CloudCfg)
     thresholds: Thresholds = Field(default_factory=Thresholds)
+    style: StyleCfg = Field(default_factory=StyleCfg)
 
     @field_validator("output_dir")
     @classmethod
