@@ -1,9 +1,14 @@
 """Генерация тестовых изображений (Pillow) — независимо от кода photo_chooser.images."""
 
+import time
 from fractions import Fraction
 from pathlib import Path
 
+import AVFoundation
+import CoreMedia
+import Foundation
 import numpy as np
+import Quartz
 from PIL import Image, ImageDraw, ImageFilter
 
 EXIF_IFD, GPS_IFD = 0x8769, 0x8825
@@ -55,3 +60,43 @@ def _dms(value: float):
     m = int((value - d) * 60)
     s = round(((value - d) * 60 - m) * 60, 2)
     return (Fraction(d), Fraction(m), Fraction(s).limit_denominator(100))
+
+
+def write_mov(path: Path, frames: list[Image.Image], fps: int = 10) -> Path:
+    """H.264 .mov из кадров Pillow через AVAssetWriter (как видеочасть Live Photo)."""
+    w, h = frames[0].size
+    url = Foundation.NSURL.fileURLWithPath_(str(path))
+    writer, err = AVFoundation.AVAssetWriter.assetWriterWithURL_fileType_error_(
+        url, AVFoundation.AVFileTypeQuickTimeMovie, None)
+    assert writer is not None, err
+    settings = {AVFoundation.AVVideoCodecKey: AVFoundation.AVVideoCodecTypeH264,
+                AVFoundation.AVVideoWidthKey: w, AVFoundation.AVVideoHeightKey: h}
+    video = AVFoundation.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(
+        AVFoundation.AVMediaTypeVideo, settings)
+    attrs = {Quartz.kCVPixelBufferPixelFormatTypeKey: Quartz.kCVPixelFormatType_32BGRA,
+             Quartz.kCVPixelBufferWidthKey: w, Quartz.kCVPixelBufferHeightKey: h}
+    adaptor = AVFoundation.AVAssetWriterInputPixelBufferAdaptor\
+        .assetWriterInputPixelBufferAdaptorWithAssetWriterInput_sourcePixelBufferAttributes_(video, attrs)
+    writer.addInput_(video)
+    writer.startWriting()
+    writer.startSessionAtSourceTime_(CoreMedia.kCMTimeZero)
+    for i, frame in enumerate(frames):
+        while not video.isReadyForMoreMediaData():
+            time.sleep(0.01)
+        _, buf = Quartz.CVPixelBufferPoolCreatePixelBuffer(None, adaptor.pixelBufferPool(), None)
+        Quartz.CVPixelBufferLockBaseAddress(buf, 0)
+        stride = Quartz.CVPixelBufferGetBytesPerRow(buf)
+        target = np.frombuffer(Quartz.CVPixelBufferGetBaseAddress(buf).as_buffer(stride * h), dtype=np.uint8)
+        rgb = np.asarray(frame.convert("RGB"), dtype=np.uint8)
+        bgra = np.concatenate([rgb[..., ::-1], np.full((h, w, 1), 255, np.uint8)], axis=2)
+        target.reshape(h, stride)[:, : w * 4] = bgra.reshape(h, w * 4)
+        Quartz.CVPixelBufferUnlockBaseAddress(buf, 0)
+        assert adaptor.appendPixelBuffer_withPresentationTime_(buf, CoreMedia.CMTimeMake(i, fps)), writer.error()
+    video.markAsFinished()
+    done = []
+    writer.finishWritingWithCompletionHandler_(lambda: done.append(True))
+    deadline = time.monotonic() + 10
+    while not done and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert writer.status() == AVFoundation.AVAssetWriterStatusCompleted, writer.error()
+    return path

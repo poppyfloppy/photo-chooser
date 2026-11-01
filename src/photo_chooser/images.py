@@ -73,3 +73,17 @@ def write_tiff(img, dest: Path, metadata_from: Path) -> None:
     Quartz.CGImageDestinationAddImage(out, img, props)
     if not Quartz.CGImageDestinationFinalize(out):
         raise ValueError(f"не удалось записать TIFF {dest}")
+
+
+def fit_long_side(img, long_side: int):
+    """Уменьшает изображение до длинной стороны long_side (не увеличивает)."""
+    w, h = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img)
+    if max(w, h) <= long_side:
+        return img
+    scale = long_side / max(w, h)
+    nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
+    ctx = Quartz.CGBitmapContextCreate(None, nw, nh, 8, 0, Quartz.CGColorSpaceCreateDeviceRGB(),
+                                       Quartz.kCGImageAlphaNoneSkipLast)
+    Quartz.CGContextSetInterpolationQuality(ctx, Quartz.kCGInterpolationHigh)
+    Quartz.CGContextDrawImage(ctx, Quartz.CGRectMake(0, 0, nw, nh), img)
+    return Quartz.CGBitmapContextCreateImage(ctx)
