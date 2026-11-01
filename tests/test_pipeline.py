@@ -124,6 +124,17 @@ def test_no_cloud_end_to_end(tmp_path):
     assert result.themes[0].error is None
 
 
+def test_stage1_line_is_dash_when_not_applicable(tmp_path):
+    album = Album(tmp_path, n=4)
+    result, _ = _run(album, _trip(GIZA, DAY), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), no_cloud=True)
+    for outcome in result.themes:  # без облака первая ступень не запускалась
+        assert "Признано подходящими к теме на первой ступени: —" in outcome.report_path.read_text(encoding="utf-8")
+    result, _ = _run(album, _trip(GIZA, DAY), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"))
+    giza, day = (o.report_path.read_text(encoding="utf-8") for o in result.themes)
+    assert "Признано подходящими к теме на первой ступени: 4" in giza
+    assert "Признано подходящими к теме на первой ступени: —" in day  # тема только с интервалом (FR-1.4)
+
+
 def test_no_cloud_ignores_query_with_warning(tmp_path):
     album = Album(tmp_path, n=4)
     result, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), no_cloud=True)

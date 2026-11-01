@@ -29,7 +29,7 @@ class ThemeStats:
     duplicates_collapsed: int
     in_interval: int
     sent_to_screen: int
-    matched: int
+    matched: int | None  # None — первая ступень к теме не применялась
     sent_to_judge: int
     from_cache: int
     unjudged: int
@@ -100,7 +100,7 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, assembled: Asse
               f"- Схлопнуто как дубли: {stats.duplicates_collapsed}",
               f"- Прошло интервал: {stats.in_interval}",
               f"- Отправлено на первую ступень (общая на запуск): {stats.sent_to_screen}",
-              f"- Признано подходящими к теме на первой ступени: {stats.matched}",
+              f"- Признано подходящими к теме на первой ступени: {'—' if stats.matched is None else stats.matched}",
               f"- Кандидатов на второй ступени: {stats.sent_to_judge} (из кэша: {stats.from_cache}, "
               f"без оценки: {stats.unjudged})",
               f"- Стоимость: первая ступень ${stats.usd_screen:.4f} (общая на запуск), "

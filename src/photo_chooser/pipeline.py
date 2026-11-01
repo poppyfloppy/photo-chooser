@@ -208,7 +208,8 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             judge: StageOutcome | None = None
             error = None
             th = cfg.thresholds
-            matched = len(assets) if t.interval_only else sum(
+            # «признано подходящими» — только для тем с query и только когда первая ступень работала
+            matched = None if opts.no_cloud or t.interval_only else sum(
                 1 for a in assets if a.uuid in screenings and screenings[a.uuid].relevance.get(t.screen_key(), 0)
                 >= th.min_theme_relevance)
             if opts.no_cloud:

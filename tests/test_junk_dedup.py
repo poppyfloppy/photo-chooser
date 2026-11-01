@@ -25,10 +25,15 @@ def _feat(uuid="A", *, utility=False, sharp=50.0, luma=0.5, fp=b""):
 
 def test_junk_reasons_order():
     assert junk_reason(make_asset(is_screenshot=True), _feat(utility=True, sharp=0.1, luma=0.01), TH) == "скриншот"
-    assert junk_reason(make_asset(), _feat(utility=True, sharp=0.1, luma=0.01), TH) == "утилитарный кадр"
     assert junk_reason(make_asset(), _feat(sharp=0.5, luma=0.01), TH) == "смаз"
     assert junk_reason(make_asset(), _feat(luma=0.02), TH) == "слишком тёмный"
     assert junk_reason(make_asset(), _feat(luma=0.98), TH) == "пересвечен"
+
+
+def test_utility_flag_is_not_junk():
+    # Vision помечает «утилитарными» росписи гробниц, рельефы и экспонаты музеев (Egypt.26: 197 из 2522) —
+    # таблички отсекают облачные ступени
+    assert junk_reason(make_asset(), _feat(utility=True), TH) is None
 
 
 def test_good_photo_not_junk():
