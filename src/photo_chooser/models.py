@@ -56,3 +56,5 @@ class Judgment:
     feed_score: int
     stories_score: int
     reason: str
+    crop_feed: str = ""  # совет по кадрированию до 4:5; пусто у вертикальных кадров (SPEC FR-3 п.8)
+    crop_stories: str = ""  # то же до 9:16

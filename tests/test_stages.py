@@ -65,7 +65,7 @@ def judge_handler(feed=7, stories=5, only=None, **resp):
         ids = ids_in(kwargs["messages"][0]["content"])
         ids = [i for i in ids if only is None or i in only]
         return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, feed_score=feed,
-                                                          stories_score=stories, reason="Пирамиды на закате")
+                                                          stories_score=stories, reason="Пирамиды на закате", crop_feed="", crop_stories="")
                                                 for i in ids]), **resp)
     return handler
 
@@ -140,8 +140,8 @@ def test_screen_groups_follow_capture_time(tmp_path, monkeypatch):
 def test_judge_maps_short_ids_and_clamps():
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[
-            JudgeItem(id="p02", matches_theme=False, feed_score=11, stories_score=0, reason="Не Гиза"),
-            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=4, reason="Сфинкс крупно")]))
+            JudgeItem(id="p02", matches_theme=False, feed_score=11, stories_score=0, reason="Не Гиза", crop_feed="", crop_stories=""),
+            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=4, reason="Сфинкс крупно", crop_feed="", crop_stories="")]))
 
     client = FakeClient(handler)
     result = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(2))
@@ -157,8 +157,8 @@ def test_missing_ids_are_unjudged(tmp_path):
 
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[
-            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=4, reason="r"),
-            JudgeItem(id="p99", matches_theme=True, feed_score=8, stories_score=4, reason="r")]))
+            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=4, reason="r", crop_feed="", crop_stories=""),
+            JudgeItem(id="p99", matches_theme=True, feed_score=8, stories_score=4, reason="r", crop_feed="", crop_stories="")]))
 
     client = FakeClient(handler)
     runner = JudgeRunner(client, HAIKU, "medium", _preview)
@@ -348,9 +348,9 @@ def test_judge_with_style_request():
     content = call["messages"][0]["content"]
     assert content[0]["type"] == "text" and "Reference" in content[0]["text"]
     assert [base64.b64decode(b["source"]["data"]) for b in content[1:3]] == [b"REF1", b"REF2"]
-    assert content[3]["text"] == "id: p01"
+    assert content[3]["text"] == "id: p01 (horizontal)"
     assert ids_in(content) == ["p01", "p02"] and _sent_uuids(call)[2:] == ["U000", "U001"]
-    assert runner.prompt_version == "judge-2/style-ab12cd34" and runner.extra_input_tokens == 3500
+    assert runner.prompt_version == f"{JUDGE_PROMPT_VERSION}/style-ab12cd34" and runner.extra_input_tokens == 3500
 
 
 def test_judge_cache_keyed_by_style_fingerprint(tmp_path):
@@ -372,9 +372,9 @@ def test_judge_without_style_unchanged():
     client = FakeClient(judge_handler())
     runner = JudgeRunner(client, HAIKU, "medium", _preview)
     runner.run_group(THEMES[0], _assets(1))
-    assert runner.prompt_version == "judge-2" and runner.extra_input_tokens == 0
+    assert runner.prompt_version == JUDGE_PROMPT_VERSION and runner.extra_input_tokens == 0
     assert client.calls[0]["system"] == JUDGE_SYSTEM_PROMPT
-    assert client.calls[0]["messages"][0]["content"][0]["text"] == "id: p01"
+    assert client.calls[0]["messages"][0]["content"][0]["text"] == "id: p01 (horizontal)"
 
 
 def test_style_tokens_count_toward_price_threshold(tmp_path):
@@ -401,4 +401,63 @@ def test_judge_style_without_screenshots_omits_screenshot_note():
     from photo_chooser.judge.prompts import STYLE_SCREENSHOTS_NOTE
 
     assert STYLE_SCREENSHOTS_NOTE not in call["system"] and "start of the message" not in call["system"]
-    assert call["messages"][0]["content"][0]["text"] == "id: p01"
+    assert call["messages"][0]["content"][0]["text"] == "id: p01 (horizontal)"
+
+
+
+def _labels(call) -> list[str]:
+    return [b["text"] for b in call["messages"][0]["content"] if b["type"] == "text" and b["text"].startswith("id: ")]
+
+
+def _oriented():
+    return [make_asset(uuid="H", width=4032, height=3024), make_asset(uuid="V", width=3024, height=4032),
+            make_asset(uuid="S", width=3000, height=3000)]
+
+
+def test_judge_labels_orientation():
+    client = FakeClient(judge_handler())
+    JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _oriented())
+    assert _labels(client.calls[0]) == ["id: p01 (horizontal)", "id: p02 (vertical)", "id: p03 (square)"]
+
+
+def test_screen_labels_stay_plain():
+    client = FakeClient(screen_handler())
+    ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _oriented())
+    assert _labels(client.calls[0]) == ["id: p01", "id: p02", "id: p03"]
+
+
+def test_judge_maps_crop_advice_and_clears_vertical():
+    def handler(n, kwargs):
+        return fake_response(JudgeOutput(items=[
+            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=6, reason="r",
+                      crop_feed="Оставить сфинкса справа", crop_stories="Сфинкс по центру, небо сверху"),
+            JudgeItem(id="p02", matches_theme=True, feed_score=8, stories_score=6, reason="r",
+                      crop_feed="лишний совет", crop_stories="лишний совет"),
+            JudgeItem(id="p03", matches_theme=True, feed_score=8, stories_score=6, reason="r",
+                      crop_feed=" Пирамида по центру ", crop_stories="")]))
+
+    result = JudgeRunner(FakeClient(handler), HAIKU, "medium", _preview).run_group(THEMES[0], _oriented())
+    by = {j.uuid: j for j in result.items}
+    assert (by["H"].crop_feed, by["H"].crop_stories) == ("Оставить сфинкса справа", "Сфинкс по центру, небо сверху")
+    assert (by["V"].crop_feed, by["V"].crop_stories) == ("", "")  # вертикальный кадр кадрировать не нужно
+    assert by["S"].crop_feed == "Пирамида по центру"
+
+
+def test_judge_id_with_orientation_suffix_still_maps():
+    def handler(n, kwargs):
+        return fake_response(JudgeOutput(items=[JudgeItem(id="p01 (horizontal)", matches_theme=True, feed_score=8,
+                                                          stories_score=6, reason="r", crop_feed="", crop_stories="")]))
+
+    result = JudgeRunner(FakeClient(handler), HAIKU, "medium", _preview).run_group(THEMES[0], _oriented()[:1])
+    assert [j.uuid for j in result.items] == ["H"] and result.unjudged == []
+
+
+def test_judge2_cache_not_reused_after_crop_advice(tmp_path):
+    from photo_chooser.models import Judgment
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Judgment(uuid=a.uuid, matches_theme=True, feed_score=7, stories_score=5, reason="r") for a in assets]
+    cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-2")
+    client = FakeClient(judge_handler())
+    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    assert len(client.calls) == 1

@@ -103,7 +103,9 @@ def output_model_of(kwargs: dict):
 
 
 def ids_in(content: list[dict]) -> list[str]:
-    return [b["text"].removeprefix("id: ") for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
+    # подпись второй ступени — «id: p01 (horizontal)»: id — первое слово после «id: »
+    return [b["text"].removeprefix("id: ").split(" ")[0] for b in content
+            if b["type"] == "text" and b["text"].startswith("id: ")]
 
 
 def last_text(content: list[dict]) -> str:

@@ -13,6 +13,7 @@ class Scored:
     asset: Asset
     score: float
     reason: str
+    crop: str = ""  # совет по кадрированию для этого списка: 4:5 в ленте, 9:16 в stories
 
 
 @dataclass
@@ -60,9 +61,10 @@ def pools_from_judgments(cands: list[Asset], judgments: dict[str, Judgment], qua
     fit = [(a, judgments[a.uuid]) for a in cands
            if a.uuid in judgments and (interval_only or judgments[a.uuid].matches_theme)]
     q = lambda s: quality.get(s.asset.uuid, 0.0)  # noqa: E731
-    feed = sorted((Scored(a, j.feed_score, j.reason) for a, j in fit if j.feed_score >= th.min_feed_score),
+    feed = sorted((Scored(a, j.feed_score, j.reason, j.crop_feed) for a, j in fit if j.feed_score >= th.min_feed_score),
                   key=lambda s: (-s.score, -q(s)))
-    stories = [Scored(a, j.stories_score, j.reason) for a, j in fit if j.stories_score >= th.min_stories_score]
+    stories = [Scored(a, j.stories_score, j.reason, j.crop_stories) for a, j in fit
+               if j.stories_score >= th.min_stories_score]
     return Pools(feed=feed, stories=_verticals_first(stories, key=lambda s: (-s.score, -q(s))))
 
 

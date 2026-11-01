@@ -68,6 +68,8 @@ class JudgeItem(BaseModel):
     feed_score: int
     stories_score: int
     reason: str
+    crop_feed: str  # обязательные: у вертикальных кадров модель возвращает пустую строку
+    crop_stories: str
 
 
 class JudgeOutput(BaseModel):
@@ -126,12 +128,17 @@ def call_model(client, model: str, effort: str, system: str, content: list[dict]
             time.sleep(RATE_LIMIT_SLEEP_S)
 
 
-def image_content(group: list[Asset], preview: Callable[[Asset], bytes]) -> list[dict]:
+def orientation(a: Asset) -> str:
+    return "square" if a.width == a.height else ("vertical" if a.is_vertical else "horizontal")
+
+
+def image_content(group: list[Asset], preview: Callable[[Asset], bytes], with_orientation: bool = False) -> list[dict]:
     content = []
     for i, a in enumerate(group, 1):
         with objc.autorelease_pool():  # превью кодируются через ImageIO в рабочих потоках
             data = base64.standard_b64encode(preview(a)).decode()
-        content.append({"type": "text", "text": f"id: p{i:02d}"})
+        label = f"id: p{i:02d}" + (f" ({orientation(a)})" if with_orientation else "")
+        content.append({"type": "text", "text": label})
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
     return content
 
@@ -170,7 +177,7 @@ def _parse_group(response, group: list[Asset], output_model: type[BaseModel], co
         parsed = None  # обрезанный или неполный ответ: группа остаётся неоценённой, usage учтён
     items, seen = [], set()
     for item in (parsed.items if parsed else []):
-        a = ids.get(item.id)
+        a = ids.get(item.id.strip().split(" ")[0])  # модель может повторить подпись «p01 (horizontal)»
         if a is None or a.uuid in seen:
             continue
         seen.add(a.uuid)
@@ -229,13 +236,16 @@ class JudgeRunner:
                 content += [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                                          "data": base64.standard_b64encode(ref).decode()}}
                             for ref in self.style.references]
-        content += image_content(group, self.preview)
+        content += image_content(group, self.preview, with_orientation=True)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
         response = call_model(self.client, self.model, self.effort, system, content, JudgeOutput)
 
         def convert(a: Asset, item: JudgeItem) -> Judgment:
+            vertical = orientation(a) == "vertical"  # вертикальный кадр кадрировать не нужно
             return Judgment(uuid=a.uuid, matches_theme=bool(item.matches_theme), feed_score=_clamp(item.feed_score),
-                            stories_score=_clamp(item.stories_score), reason=item.reason.strip())
+                            stories_score=_clamp(item.stories_score), reason=item.reason.strip(),
+                            crop_feed="" if vertical else item.crop_feed.strip(),
+                            crop_stories="" if vertical else item.crop_stories.strip())
 
         return _parse_group(response, group, JudgeOutput, convert)
 
