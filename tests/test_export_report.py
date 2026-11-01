@@ -214,3 +214,114 @@ def test_report_shows_style_line(tmp_path):
     write_report(path, Theme(name="Гиза", query="пирамиды"), header, assembled, _stats())
     assert "- Стиль: style.md от 2026-11-01, отпечаток ab12cd34, скриншотов в запросе: 2" in path.read_text(
         encoding="utf-8")
+
+
+# --- посты: карусели и stories (v0.3) ---------------------------------------------------------
+
+from photo_chooser.export import export_posts  # noqa: E402
+from photo_chooser.report import write_posts_report  # noqa: E402
+from photo_chooser.select import Carousel, Posts, ShotFacts, Slide, StoryPick  # noqa: E402
+
+
+def _posts_library(tmp_path, n, failing=()):
+    assets = [make_asset(uuid=f"S{i}", filename=f"IMG_{i}.HEIC") for i in range(n)]
+    files = {}
+    for a in assets:
+        f = tmp_path / f"{a.uuid}.heic"
+        f.write_bytes(a.uuid.encode())
+        files[a.uuid] = f
+    return assets, FakeLibrary([AlbumRef("al", "Egypt", n)], {"al": assets}, {}, files=files, failing=set(failing))
+
+
+def _names(path):
+    return sorted(p.name for p in path.iterdir()) if path.exists() else []
+
+
+def test_export_posts_layout(tmp_path):
+    a, lib = _posts_library(tmp_path, 7)
+    posts = Posts([Carousel("Пирамиды", [Slide(a[0], [a[1], a[2]]), Slide(a[3])]), Carousel("Закат", [Slide(a[4])])],
+                  [StoryPick(a[5], "best", ""), StoryPick(a[6], "interesting", "рассказать о ладье")])
+    out = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    feed = tmp_path / "theme" / "feed"
+    assert _names(feed) == ["carousel-1 Пирамиды", "carousel-2 Закат"]
+    assert _names(feed / "carousel-1 Пирамиды") == ["01_IMG_0.HEIC", "02_IMG_3.HEIC", "alternatives"]
+    assert _names(feed / "carousel-1 Пирамиды" / "alternatives") == ["01a_IMG_1.HEIC", "01b_IMG_2.HEIC"]
+    assert _names(tmp_path / "theme" / "stories") == ["01_IMG_5.HEIC", "02_IMG_6.HEIC"]
+    assert [c.folder for c in out.carousels] == ["carousel-1 Пирамиды", "carousel-2 Закат"]
+    assert out.stories[1].hint == "рассказать о ладье" and out.failed == []
+
+
+def test_export_posts_replaces_failed_slide_with_alternative(tmp_path):
+    a, lib = _posts_library(tmp_path, 4, failing={"S1"})
+    posts = Posts([Carousel("X", [Slide(a[0]), Slide(a[1], [a[2], a[3]])])], [])
+    out = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    slide = out.carousels[0].slides[1]
+    assert slide.replaced and slide.shot.files == ["02_IMG_2.HEIC"] and "замена" in " ".join(slide.shot.notes)
+    assert [s.files for s in slide.alternatives] == [["02a_IMG_3.HEIC"]]
+    assert [x.uuid for x, _ in out.failed] == ["S1"]
+
+
+def test_export_posts_drops_slot_without_alternatives(tmp_path):
+    a, lib = _posts_library(tmp_path, 3, failing={"S1"})
+    posts = Posts([Carousel("X", [Slide(a[0]), Slide(a[1]), Slide(a[2])])], [])
+    out = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    assert [s.shot.files for s in out.carousels[0].slides] == [["01_IMG_0.HEIC"], ["02_IMG_2.HEIC"]]
+    assert [x.uuid for x, _ in out.failed] == ["S1"]
+    assert _names(tmp_path / "theme" / "stories") == []  # папки создаются всегда
+
+
+def test_export_posts_unsafe_and_duplicate_titles(tmp_path):
+    a, lib = _posts_library(tmp_path, 3)
+    long = "Гиза/Каир: 🐪 " + "очень длинное название сюжета " * 3
+    posts = Posts([Carousel(long, [Slide(a[0])]), Carousel("Сфинкс", [Slide(a[1])]), Carousel("Сфинкс", [Slide(a[2])])],
+                  [])
+    posts.carousels = posts.carousels[:3]
+    out = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    folders = [c.folder for c in out.carousels]
+    assert "/" not in folders[0] and ":" not in folders[0] and len(folders[0]) <= 60
+    assert folders[1:] == ["carousel-2 Сфинкс", "carousel-3 Сфинкс"]
+    same = Posts([Carousel("Сфинкс", [Slide(a[0])])], [])
+    again = export_posts(lib, same, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    assert again.carousels[0].folder == "carousel-1 Сфинкс"
+    (tmp_path / "theme2" / "feed" / "carousel-1 Сфинкс").mkdir(parents=True)
+    clash = export_posts(lib, same, tmp_path / "theme2", tmp_path / "tmp", AppConfig())
+    assert clash.carousels[0].folder == "carousel-1 Сфинкс_2"
+
+
+def _posts_stats(**kw):
+    base = dict(read=100, no_preview=0, junk=1, duplicates_collapsed=10, in_interval=89, sent_to_screen=89, matched=40,
+                sent_to_judge=40, from_cache=0, unjudged=0, usd_screen=0.0142, usd_judge=0.75, usd_album_total=1.2,
+                sent_to_compose=30, usd_compose=0.19)
+    base.update(kw)
+    return ThemeStats(**base)
+
+
+def test_report_posts_tables(tmp_path):
+    a, lib = _posts_library(tmp_path, 5)
+    posts = Posts([Carousel("Пирамиды", [Slide(a[0], [a[1]]), Slide(a[2])])],
+                  [StoryPick(a[3], "best", ""), StoryPick(a[4], "interesting", "рассказать о ладье Хеопса")])
+    exported = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    facts = {x.uuid: ShotFacts(8, 6, f"Причина {x.uuid}", "до 4:5: справа", "до 9:16: центр") for x in a}
+    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+                          prompt_versions="screen-2, judge-4, compose-1", run_at=NOW, warnings=[], album="Egypt.26")
+    path = tmp_path / "report.md"
+    write_posts_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, facts, _posts_stats())
+    text = path.read_text(encoding="utf-8")
+    assert "### Карусель 1 — Пирамиды" in text
+    assert "| Слайд | Файл | Лента / stories | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |" in text
+    assert "| 1 | 01_IMG_0.HEIC | 8 / 6 | горизонтальная |  | Причина S0 | до 4:5: справа | 01a_IMG_1.HEIC |" in text
+    assert "| № | Файл | Лента / stories | Тип | Что пояснить | Причина | Кадрирование (9:16) |" in text
+    assert "| 2 | 02_IMG_4.HEIC | 8 / 6 | интересное | рассказать о ладье Хеопса | Причина S4 | до 9:16: центр |" in text
+    assert "Посты: каруселей 1 (2), stories 2" in text
+    assert "сборка $0.1900 (по теме)" in text and "Отправлено в сборку: 30" in text
+
+
+def test_report_fallback_warning_and_empty_posts(tmp_path):
+    exported = export_posts(FakeLibrary([], {}, {}), Posts([], []), tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+                          prompt_versions="screen-2, judge-4, compose-1", run_at=NOW,
+                          warnings=["Сборка не удалась — разложено по оценкам (refusal)"], album="Egypt.26")
+    path = tmp_path / "report.md"
+    write_posts_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, {}, _posts_stats())
+    text = path.read_text(encoding="utf-8")
+    assert "разложено по оценкам" in text and "Каруселей нет" in text and "Посты: каруселей 0, stories 0" in text
