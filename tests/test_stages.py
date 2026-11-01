@@ -303,3 +303,27 @@ def test_interrupt_keeps_completed_groups(tmp_path, monkeypatch):
     assert len(client.calls) == 3
     assert cache.album_spend("album-1") == pytest.approx(3 * GROUP_USD)
     assert all(cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, JUDGE_PROMPT_VERSION) for a in assets)
+
+
+def test_judge1_cache_not_reused_after_rubric_change(tmp_path):
+    # рубрики ленты и stories изменились (D8) — оценки по прежнему промпту не годятся
+    from photo_chooser.models import Judgment
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Judgment(uuid=a.uuid, matches_theme=True, feed_score=5, stories_score=8, reason="есть люди") for a in assets]
+    cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-1")
+    client = FakeClient(judge_handler())
+    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    assert len(client.calls) == 1
+
+
+def test_screen1_cache_not_reused_after_rubric_change(tmp_path):
+    from photo_chooser.models import Screening
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, feed_score=5, stories_score=8) for a in assets]
+    cache.put_screenings(old, themes_key("Egypt.26", THEMES[:2]), HAIKU, "screen-1")
+    client = FakeClient(screen_handler())
+    run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
+               CloudCfg())
+    assert len(client.calls) == 1
