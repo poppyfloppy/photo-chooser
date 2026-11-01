@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 import anthropic
 import objc
@@ -74,6 +74,27 @@ class JudgeItem(BaseModel):
 
 class JudgeOutput(BaseModel):
     items: list[JudgeItem]
+
+
+class ComposeSlide(BaseModel):
+    id: str
+    alternatives: list[str]
+
+
+class ComposeCarousel(BaseModel):
+    title: str
+    slides: list[ComposeSlide]
+
+
+class ComposeStory(BaseModel):
+    id: str
+    kind: Literal["best", "interesting"]
+    hint: str
+
+
+class ComposeOutput(BaseModel):
+    carousels: list[ComposeCarousel]
+    stories: list[ComposeStory]
 
 
 @dataclass

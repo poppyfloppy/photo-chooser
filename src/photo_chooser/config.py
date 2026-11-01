@@ -139,6 +139,14 @@ class ShortlistCfg(_Strict):
     stories: int = Field(default=40, ge=0)
 
 
+class PostsCfg(_Strict):
+    """Посты на тему (SPEC FR-4): лимиты каруселей ленты и stories."""
+
+    carousels: int = Field(default=2, ge=0)
+    carousel_size: int = Field(default=9, ge=1)
+    stories: int = Field(default=9, ge=0)
+
+
 class CloudCfg(_Strict):
     screen_model: str = "claude-haiku-5-5"
     model: str = "claude-haiku-5-5"
@@ -148,6 +156,7 @@ class CloudCfg(_Strict):
     candidates_per_theme: int = Field(default=100, ge=1)
     preview_long_side_px: int = Field(default=1024, ge=64)
     group_size: int = Field(default=20, ge=1)
+    compose_candidates: int = Field(default=30, ge=1)  # сильнейших кадров темы в запросе сборки (FR-4.1)
 
     @field_validator("pricing", mode="before")
     @classmethod
@@ -194,6 +203,7 @@ class StyleCfg(_Strict):
 class AppConfig(_Strict):
     output_dir: Path = Field(default=Path("~/Pictures/photo-chooser"), validate_default=True)
     shortlist: ShortlistCfg = Field(default_factory=ShortlistCfg)
+    posts: PostsCfg = Field(default_factory=PostsCfg)
     cloud: CloudCfg = Field(default_factory=CloudCfg)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     style: StyleCfg = Field(default_factory=StyleCfg)
