@@ -1,0 +1,29 @@
+[project]
+name = "photo-chooser"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "v.borisov", email = "valeriyborisov9000xl@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.3.0",
+    "numpy>=2.5.4",
+    "pyobjc-framework-avfoundation>=13.0",
+    "pyobjc-framework-photos>=13.0",
+    "pyobjc-framework-quartz>=13.0",
+    "pyobjc-framework-vision>=13.0",
+]
+
+[project.scripts]
+photo-chooser = "photo_chooser:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+spike = [
+    "pillow>=13.0.0",
+]
