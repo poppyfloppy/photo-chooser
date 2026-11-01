@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS screenings (
 CREATE TABLE IF NOT EXISTS judgments (
     uuid TEXT, theme_key TEXT, model TEXT, prompt_version TEXT, json TEXT NOT NULL,
     PRIMARY KEY (uuid, theme_key, model, prompt_version));
+CREATE TABLE IF NOT EXISTS compositions (
+    theme_key TEXT, model TEXT, prompt_version TEXT, input_fp TEXT, json TEXT NOT NULL,
+    PRIMARY KEY (theme_key, model, prompt_version, input_fp));
 CREATE TABLE IF NOT EXISTS spend (album_uuid TEXT NOT NULL, model TEXT NOT NULL, usd REAL NOT NULL,
                                   created_at REAL NOT NULL);
 """
@@ -75,6 +78,15 @@ class Cache:
         self._write("INSERT OR REPLACE INTO judgments VALUES (?, ?, ?, ?, ?)",
                     [(j.uuid, theme_key, model, prompt_version, json.dumps(asdict(j), ensure_ascii=False))
                      for j in items])
+
+    def get_composition(self, theme_key: str, model: str, prompt_version: str, input_fp: str) -> str | None:
+        row = self._read_one("SELECT json FROM compositions WHERE theme_key = ? AND model = ? AND prompt_version = ? "
+                             "AND input_fp = ?", (theme_key, model, prompt_version, input_fp))
+        return row[0] if row else None
+
+    def put_composition(self, theme_key: str, model: str, prompt_version: str, input_fp: str, json_text: str) -> None:
+        self._write("INSERT OR REPLACE INTO compositions VALUES (?, ?, ?, ?, ?)",
+                    [(theme_key, model, prompt_version, input_fp, json_text)])
 
     def add_spend(self, album_uuid: str, model: str, usd: float) -> None:
         self._write("INSERT INTO spend VALUES (?, ?, ?, ?)", [(album_uuid, model, usd, time.time())])

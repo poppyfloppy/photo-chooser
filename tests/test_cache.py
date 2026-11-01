@@ -75,3 +75,12 @@ def test_cache_survives_reopen(tmp_path):
     assert reopened.get_features(f.uuid) == f
     assert reopened.album_spend("album-1") == pytest.approx(0.5)
     assert reopened.get_judgment("A", "t1", "m", "judge-1") == j
+
+
+def test_composition_roundtrip(tmp_path):
+    c = Cache(tmp_path / "c.sqlite")
+    c.put_composition("t1", "claude-opus-5-5", "compose-1", "fp1", '{"carousels": [], "stories": []}')
+    assert c.get_composition("t1", "claude-opus-5-5", "compose-1", "fp1") == '{"carousels": [], "stories": []}'
+    assert c.get_composition("t1", "claude-opus-5-5", "compose-1", "fp2") is None
+    assert c.get_composition("t1", "claude-haiku-5-5", "compose-1", "fp1") is None
+    assert c.get_composition("t2", "claude-opus-5-5", "compose-1", "fp1") is None
