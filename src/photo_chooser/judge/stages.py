@@ -27,7 +27,7 @@ from photo_chooser.judge.prompts import (
     SCREEN_PROMPT_VERSION,
     SCREEN_SYSTEM_PROMPT,
     STYLE_BLOCK,
-    STYLE_REFERENCE_LABEL,
+    STYLE_REFERENCE_LABELS,
     STYLE_SCREENSHOTS_NOTE,
 )
 from photo_chooser.models import Asset, Judgment, Screening
@@ -207,6 +207,16 @@ class ScreenRunner:
         return _parse_group(response, group, ScreenOutput, convert)
 
 
+def reference_content(style: "StyleContext | None") -> list[dict]:
+    """Скриншоты страницы перед кандидатами: у каждого подпись — грид ленты или stories (FR-11.4)."""
+    content: list[dict] = []
+    for kind, data in (style.references if style else []):
+        content.append({"type": "text", "text": STYLE_REFERENCE_LABELS[kind]})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                    "data": base64.standard_b64encode(data).decode()}})
+    return content
+
+
 def judge_prompt_version(style: "StyleContext | None") -> str:
     """Версия промпта второй ступени для ключа кэша: со стилем в неё входит отпечаток профиля (FR-9.3)."""
     return JUDGE_PROMPT_VERSION if style is None else f"{JUDGE_PROMPT_VERSION}/style-{style.fingerprint}"
@@ -232,10 +242,7 @@ class JudgeRunner:
             system += "\n\n" + STYLE_BLOCK.format(text=self.style.text)
             if self.style.references:  # оговорка о скриншотах — только когда они приложены
                 system += "\n" + STYLE_SCREENSHOTS_NOTE
-                content.append({"type": "text", "text": STYLE_REFERENCE_LABEL})
-                content += [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                         "data": base64.standard_b64encode(ref).decode()}}
-                            for ref in self.style.references]
+            content += reference_content(self.style)
         content += image_content(group, self.preview, with_orientation=True)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
         response = call_model(self.client, self.model, self.effort, system, content, JudgeOutput)

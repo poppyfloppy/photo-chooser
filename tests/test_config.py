@@ -191,7 +191,7 @@ def test_style_defaults(tmp_path):
     from datetime import date
 
     style = load_app_config(tmp_path / "nope.yaml").style
-    assert style.sample == 40 and style.reference_images == 2
+    assert style.sample == 40 and style.reference_feed == 2 and style.reference_stories == 2
     assert style.model == "claude-opus-5-5"
     assert style.since == date(2018, 1, 1)
     assert style.albums == [] and style.screenshots_album is None
@@ -206,8 +206,16 @@ def test_style_from_yaml(tmp_path):
     assert style.sample == 40
 
 
-def test_style_rejects_negative_reference_images(tmp_path):
+def test_style_rejects_negative_reference_feed(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("style:\n  reference_images: -1\n", encoding="utf-8")
+    path.write_text("style:\n  reference_feed: -1\n", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_app_config(path)
+
+
+def test_style_reference_images_key_is_config_error(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("style:\n  reference_images: 2\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_app_config(path)
+    assert "reference_feed" in str(e.value) and "reference_stories" in str(e.value)

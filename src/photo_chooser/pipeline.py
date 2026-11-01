@@ -261,8 +261,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 prompt_versions=(None if opts.no_cloud
                                  else f"{SCREEN_PROMPT_VERSION}, {judge_prompt_version(style)}"),
                 run_at=now, warnings=warnings, album=album.title,
-                style=None if style is None else (f"style.md от {style.created_at:%Y-%m-%d}, отпечаток "
-                                                  f"{style.fingerprint}, скриншотов в запросе: {len(style.references)}"))
+                style=None if style is None else _style_line(style))
             stats = ThemeStats(
                 read=len(state.assets), no_preview=len(state.no_preview), junk=len(state.junk),
                 duplicates_collapsed=state.duplicates_collapsed, in_interval=len(assets),
@@ -277,6 +276,12 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             outcomes.append(ThemeOutcome(t, report_path, assembled, error))
     return RunResult(run_dir=run_dir, themes=outcomes, estimate_usd=estimate, theme_counts=counts,
                      album_spend_usd=cache.album_spend(album.uuid))
+
+
+def _style_line(style: StyleContext) -> str:
+    kinds = [kind for kind, _ in style.references]
+    return (f"style.md от {style.created_at:%Y-%m-%d}, отпечаток {style.fingerprint}, скриншотов: лента "
+            f"{kinds.count('feed')}, stories {kinds.count('stories')}")
 
 
 def _draft(s: Screening | None) -> float:

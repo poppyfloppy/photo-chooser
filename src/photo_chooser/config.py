@@ -179,7 +179,16 @@ class StyleCfg(_Strict):
     screenshots_album: str | None = None
     sample: int = Field(default=40, ge=1)
     model: str = "claude-opus-5-5"
-    reference_images: int = Field(default=2, ge=0)
+    reference_feed: int = Field(default=2, ge=0)  # первые скриншоты альбома — гриды ленты
+    reference_stories: int = Field(default=2, ge=0)  # следующие — stories
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed_keys(cls, data):
+        if isinstance(data, dict) and "reference_images" in data:
+            raise ConfigError("style.reference_images заменён на reference_feed и reference_stories (версия 0.3): "
+                              "сколько первых скриншотов альбома — гриды ленты и сколько следующих — stories")
+        return data
 
 
 class AppConfig(_Strict):

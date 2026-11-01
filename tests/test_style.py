@@ -180,11 +180,11 @@ def test_load_style_missing_or_blank_is_none(tmp_path):
 def test_load_style_reads_profile_and_screenshots(tmp_path):
     path = tmp_path / "style.md"
     path.write_text("## Лента\nТёплый свет.\n", encoding="utf-8")
-    ctx = style.load_style(path, _shots_library(tmp_path, 3), _cfg())
-    assert ctx.text.startswith("## Лента") and len(ctx.references) == 2 and ctx.warnings == []
-    assert all(r[:2] == b"\xff\xd8" for r in ctx.references)
+    ctx = style.load_style(path, _shots_library(tmp_path, 4), _cfg())
+    assert ctx.text.startswith("## Лента") and len(ctx.references) == 4 and ctx.warnings == []
+    assert all(data[:2] == b"\xff\xd8" for _, data in ctx.references)
     assert len(ctx.fingerprint) == 8
-    assert ctx.extra_tokens == 2 * 1512 + len(ctx.text) // 2 + 100
+    assert ctx.extra_tokens == 4 * 1512 + len(ctx.text) // 2 + 100
 
 
 def test_load_style_fingerprint_changes_with_text_and_screens(tmp_path):
@@ -193,7 +193,7 @@ def test_load_style_fingerprint_changes_with_text_and_screens(tmp_path):
     lib = _shots_library(tmp_path, 3)
     first = style.load_style(path, lib, _cfg()).fingerprint
     assert style.load_style(path, lib, _cfg()).fingerprint == first
-    assert style.load_style(path, lib, _cfg(reference_images=1)).fingerprint != first
+    assert style.load_style(path, lib, _cfg(reference_feed=1)).fingerprint != first
     path.write_text("## Лента\nБ\n", encoding="utf-8")
     assert style.load_style(path, lib, _cfg()).fingerprint != first
 
@@ -210,3 +210,31 @@ def test_load_style_missing_screenshot_album_warns(tmp_path):
     path.write_text("## Лента\n…\n", encoding="utf-8")
     ctx = style.load_style(path, _shots_library(tmp_path, 2, title="Другое"), _cfg())
     assert ctx.references == [] and len(ctx.warnings) == 1 and "Instagram style" in ctx.warnings[0]
+
+
+def _kinds(ctx):
+    return [kind for kind, _ in ctx.references]
+
+
+def test_load_style_splits_feed_and_stories(tmp_path):
+    path = tmp_path / "style.md"
+    path.write_text("## Лента\n…\n", encoding="utf-8")
+    ctx = style.load_style(path, _shots_library(tmp_path, 5), _cfg())
+    assert _kinds(ctx) == ["feed", "feed", "stories", "stories"] and ctx.warnings == []
+
+
+def test_load_style_short_album_drops_stories_first(tmp_path):
+    path = tmp_path / "style.md"
+    path.write_text("## Лента\n…\n", encoding="utf-8")
+    ctx = style.load_style(path, _shots_library(tmp_path, 3), _cfg())
+    assert _kinds(ctx) == ["feed", "feed", "stories"] and len(ctx.warnings) == 1
+
+
+def test_load_style_fingerprint_depends_on_kinds(tmp_path):
+    path = tmp_path / "style.md"
+    path.write_text("## Лента\n…\n", encoding="utf-8")
+    lib = _shots_library(tmp_path, 4)
+    two_two = style.load_style(path, lib, _cfg())
+    one_three = style.load_style(path, lib, _cfg(reference_feed=1, reference_stories=3))
+    assert _kinds(one_three) == ["feed", "stories", "stories", "stories"]
+    assert two_two.fingerprint != one_three.fingerprint

@@ -396,13 +396,13 @@ def test_run_with_style_sends_profile_and_marks_header(tmp_path):
     style_path = tmp_path / "style.md"
     style_path.write_text("## Лента\nМягкий тёплый свет.\n", encoding="utf-8")
     client = FakeClient(handler())
-    result = run(_trip(GIZA), _style_cfg(tmp_path, reference_images=1), RunOptions(), album.library,
+    result = run(_trip(GIZA), _style_cfg(tmp_path, reference_feed=1, reference_stories=0), RunOptions(), album.library,
                  Cache(tmp_path / "c.sqlite"), lambda: client, NOW, style_path=style_path)
     judge_calls = client.calls_for(JudgeOutput)
     assert judge_calls and "Мягкий тёплый свет." in judge_calls[0]["system"]
     assert "Мягкий тёплый свет." not in client.calls_for(ScreenOutput)[0]["system"]
     report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert "- Стиль: style.md от " in report and "скриншотов в запросе: 1" in report
+    assert "- Стиль: style.md от " in report and "скриншотов: лента 1, stories 0" in report
     assert f"{JUDGE_PROMPT_VERSION}/style-" in report
 
 

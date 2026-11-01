@@ -34,7 +34,10 @@ Give recent posts more weight than old ones: the style may have changed over the
 Whether people appear in the photos is not part of the style: do not mention people, the author or selfies as a trait of the page.
 Describe the style only; do not describe individual photos. Output only the description."""
 
-STYLE_REFERENCE_LABEL = "Reference: screenshots of the author's Instagram page (do not score them)"
+STYLE_REFERENCE_LABELS = {
+    "feed": "Reference: screenshot of the author's Instagram page — feed grid (do not score it)",
+    "stories": "Reference: screenshot of the author's Instagram page — stories (do not score it)",
+}
 
 STYLE_BLOCK = """Style of the author's Instagram page, written from their published posts and page screenshots:
 {text}
