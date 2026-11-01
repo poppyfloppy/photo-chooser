@@ -138,7 +138,8 @@ def test_unexpected_error_writes_traceback_log(env, monkeypatch):
     assert "Traceback" in text and "KeyError: 'ASSET-1/L0/001'" in text and "in broken" in text
 
 
-def _style_env(tmp_path, monkeypatch, n_posts=12, text="## Лента\nТёплый свет.\n\n## Stories\nЛегко."):
+def _style_env(tmp_path, monkeypatch, n_posts=12, text="## Лента\nТёплый свет.\n\n## Stories\nЛегко.",
+               without_preview=0):
     from datetime import timedelta
 
     from fakes import fake_response
@@ -147,7 +148,8 @@ def _style_env(tmp_path, monkeypatch, n_posts=12, text="## Лента\nТёпл�
     posts = [make_asset(uuid=f"S{i:02d}", taken_at=datetime(2026, 10, 1, tzinfo=UTC) - timedelta(days=i))
              for i in range(n_posts)]
     shots = [make_asset(uuid="G0", width=1179, height=2556, is_screenshot=True)]
-    previews = {a.uuid: save_jpeg(varied_scene(i), tmp_path / f"s{i}.jpg") for i, a in enumerate(posts + shots)}
+    previews = {a.uuid: save_jpeg(varied_scene(i), tmp_path / f"s{i}.jpg") for i, a in enumerate(posts + shots)
+                if i >= without_preview}
     library = FakeLibrary([AlbumRef("SN", "Snapseed", n_posts), AlbumRef("GR", "Instagram style", 1)],
                           {"SN": posts, "GR": shots}, previews)
     cache = Cache(tmp_path / "c.sqlite")
@@ -184,3 +186,15 @@ def test_style_command_too_few_posts_exit_2(tmp_path, monkeypatch):
     client, _ = _style_env(tmp_path, monkeypatch, n_posts=9)
     result = runner.invoke(cli.app, ["style", "--yes"])
     assert result.exit_code == 2 and client.calls == []
+
+
+
+def test_style_command_missing_previews_keeps_profile(tmp_path, monkeypatch):
+    client, _ = _style_env(tmp_path, monkeypatch, without_preview=11)
+    profile = tmp_path / "cfg" / "style.md"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("хороший профиль\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["style", "--yes"])
+    assert result.exit_code == 2 and client.calls == []
+    assert profile.read_text(encoding="utf-8") == "хороший профиль\n"
+    assert not (tmp_path / "cfg" / "style.prev.md").exists()

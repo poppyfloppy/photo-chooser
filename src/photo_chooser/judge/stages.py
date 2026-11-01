@@ -28,6 +28,7 @@ from photo_chooser.judge.prompts import (
     SCREEN_SYSTEM_PROMPT,
     STYLE_BLOCK,
     STYLE_REFERENCE_LABEL,
+    STYLE_SCREENSHOTS_NOTE,
 )
 from photo_chooser.models import Asset, Judgment, Screening
 
@@ -222,7 +223,8 @@ class JudgeRunner:
         system, content = JUDGE_SYSTEM_PROMPT, []
         if self.style is not None:
             system += "\n\n" + STYLE_BLOCK.format(text=self.style.text)
-            if self.style.references:
+            if self.style.references:  # оговорка о скриншотах — только когда они приложены
+                system += "\n" + STYLE_SCREENSHOTS_NOTE
                 content.append({"type": "text", "text": STYLE_REFERENCE_LABEL})
                 content += [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                                          "data": base64.standard_b64encode(ref).decode()}}

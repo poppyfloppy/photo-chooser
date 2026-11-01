@@ -344,6 +344,7 @@ def test_judge_with_style_request():
     runner.run_group(THEMES[0], _assets(2))
     call = client.calls[0]
     assert call["system"].startswith(JUDGE_SYSTEM_PROMPT) and "Тёплый свет, минимализм." in call["system"]
+    assert "do not score them" in call["system"]  # скриншоты приложены — оговорка на месте
     content = call["messages"][0]["content"]
     assert content[0]["type"] == "text" and "Reference" in content[0]["text"]
     assert [base64.b64decode(b["source"]["data"]) for b in content[1:3]] == [b"REF1", b"REF2"]
@@ -388,3 +389,16 @@ def test_style_tokens_count_toward_price_threshold(tmp_path):
     with pytest.raises(ValueError):
         run_judge(JudgeRunner(client, HAIKU, "medium", _preview, style=heavy), Cache(tmp_path / "b.sqlite"),
                   THEMES[0], _assets(80), {}, cfg, "album-1")
+
+
+
+def test_judge_style_without_screenshots_omits_screenshot_note():
+    # reference_images: 0 или альбома нет — модель не должна искать образцы среди кандидатов
+    client = FakeClient(judge_handler())
+    JudgeRunner(client, HAIKU, "medium", _preview, style=_style(refs=())).run_group(THEMES[0], _assets(2))
+    call = client.calls[0]
+    assert "Тёплый свет, минимализм." in call["system"]
+    from photo_chooser.judge.prompts import STYLE_SCREENSHOTS_NOTE
+
+    assert STYLE_SCREENSHOTS_NOTE not in call["system"] and "start of the message" not in call["system"]
+    assert call["messages"][0]["content"][0]["text"] == "id: p01"

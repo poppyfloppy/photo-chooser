@@ -79,17 +79,33 @@ def _image_block(data: bytes) -> dict:
                                         "data": base64.standard_b64encode(data).decode()}}
 
 
-def build_profile(client, model: str, effort: str, posts: list[Asset], screenshots: list[Asset],
-                  preview: Callable[[Asset, int], bytes | None]) -> ProfileResult:
+@dataclass(frozen=True)
+class Sample:
+    asset: Asset
+    kind: str  # "post" | "screenshot"
+    label: str  # подпись перед картинкой: тип и месяц (FR-11.2)
+    image: bytes
+
+
+def load_samples(posts: list[Asset], screenshots: list[Asset],
+                 preview: Callable[[Asset, int], bytes | None]) -> list[Sample]:
+    """Превью образцов — до подтверждения и отправки. Постов с превью меньше MIN_POSTS → ConfigError:
+    профиль из пары картинок хуже, чем прежний style.md."""
+    samples = [Sample(a, "post", f"post, {a.taken_at:%Y-%m}", data)
+               for a in posts if (data := preview(a, POST_LONG_SIDE)) is not None]
+    if len(samples) < MIN_POSTS:
+        raise ConfigError(f"Превью получено для {len(samples)} постов-образцов из {len(posts)}, нужно не меньше "
+                          f"{MIN_POSTS}: проверьте подключение к iCloud и повторите")
+    samples += [Sample(a, "screenshot", f"page screenshot, {a.taken_at:%Y-%m}", data)
+                for a in screenshots if (data := preview(a, SCREENSHOT_LONG_SIDE)) is not None]
+    return samples
+
+
+def build_profile(client, model: str, effort: str, samples: list[Sample]) -> ProfileResult:
     """Один запрос: подписанные посты (от новых к старым) и скриншоты страницы → описание стиля на русском."""
     content: list[dict] = []
-    samples = [(a, f"post, {a.taken_at:%Y-%m}", POST_LONG_SIDE) for a in posts]
-    samples += [(a, "page screenshot", SCREENSHOT_LONG_SIDE) for a in screenshots]
-    for asset, label, side in samples:
-        data = preview(asset, side)
-        if data is None:
-            continue
-        content += [{"type": "text", "text": label}, _image_block(data)]
+    for sample in samples:
+        content += [{"type": "text", "text": sample.label}, _image_block(sample.image)]
     content.append({"type": "text", "text": "Describe the style of this Instagram page."})
     response = call_model(client, model, effort, STYLE_SYSTEM_PROMPT, content, None)
     text = "".join(block.text for block in response.content if block.type == "text").strip()

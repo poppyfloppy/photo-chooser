@@ -97,34 +97,49 @@ def _texts_before_images(content):
 
 def test_build_profile_request_shape():
     client = FakeClient(lambda n, kw: fake_response(text="## Лента\nТёплый свет.\n\n## Stories\nЛегко."))
-    posts = [make_asset(uuid="P1", taken_at=datetime(2026, 10, 3, tzinfo=UTC)),
-             make_asset(uuid="P2", taken_at=datetime(2025, 8, 30, tzinfo=UTC))]
-    shots = [make_asset(uuid="G1", is_screenshot=True)]
-    result = style.build_profile(client, "claude-opus-5-5", "medium", posts, shots, _preview)
+    posts = [make_asset(uuid=f"P{i:02d}", taken_at=datetime(2026, 10, 3, tzinfo=UTC) - timedelta(days=40 * i))
+             for i in range(10)]
+    shots = [make_asset(uuid="G1", taken_at=datetime(2026, 9, 1, tzinfo=UTC), is_screenshot=True)]
+    samples = style.load_samples(posts, shots, _preview)
+    result = style.build_profile(client, "claude-opus-5-5", "medium", samples)
     assert result.text.startswith("## Лента") and result.input_tokens == 20_000 and result.output_tokens == 2_000
     call = client.calls[0]
     assert call["model"] == "claude-opus-5-5" and call["system"] == style.STYLE_SYSTEM_PROMPT
     assert call["output_config"] == {"effort": "medium"}
     assert call["_beta"] and call["fallbacks"] == "default"
     content = call["messages"][0]["content"]
-    assert _texts_before_images(content) == ["post, 2026-10", "post, 2025-08", "page screenshot"]
+    labels = _texts_before_images(content)
+    assert labels[:2] == ["post, 2026-10", "post, 2026-08"]
+    assert labels[-1] == "page screenshot, 2026-09"  # FR-11.2: тип и месяц у каждого образца
     images = [base64.b64decode(b["source"]["data"]) for b in content if b["type"] == "image"]
-    assert images == [b"P1@1024", b"P2@1024", b"G1@1568"]
+    assert images[0] == b"P00@1024" and images[-1] == b"G1@1568"
 
 
-def test_build_profile_skips_samples_without_preview():
-    client = FakeClient(lambda n, kw: fake_response(text="## Лента\n…"))
-    posts = [make_asset(uuid="P1"), make_asset(uuid="P2")]
-    style.build_profile(client, "claude-haiku-5-5", "medium", posts, [],
-                        lambda a, side: None if a.uuid == "P2" else b"x")
-    content = client.calls[0]["messages"][0]["content"]
-    assert sum(b["type"] == "image" for b in content) == 1
+def test_load_samples_skips_missing_previews():
+    posts = _posts(11)
+    samples = style.load_samples(posts, [], lambda a, side: None if a.uuid == "P0003" else b"x")
+    assert [s.asset.uuid for s in samples] == [a.uuid for a in posts if a.uuid != "P0003"]
+
+
+def test_load_samples_too_few_posts_with_preview():
+    # «Оптимизация хранилища» без сети: превью есть только у одного поста из 12
+    posts = _posts(12)
+    with pytest.raises(ConfigError):
+        style.load_samples(posts, [], lambda a, side: b"x" if a.uuid == "P0000" else None)
 
 
 def test_build_profile_refusal_raises():
     client = FakeClient(lambda n, kw: fake_response(text="I can't help", stop_reason="refusal"))
     with pytest.raises(RuntimeError):
-        style.build_profile(client, "claude-haiku-5-5", "medium", _posts(2), [], _preview)
+        style.build_profile(client, "claude-haiku-5-5", "medium", style.load_samples(_posts(10), [], _preview))
+
+
+def test_style_prompts_keep_people_out_of_style():
+    # D8: люди — не критерий; профиль стиля не должен вернуть их через «типичные сюжеты»
+    from photo_chooser.judge.prompts import STYLE_BLOCK
+
+    assert "people" in style.STYLE_SYSTEM_PROMPT and "not part of the style" in style.STYLE_SYSTEM_PROMPT
+    assert "not part of the style" in STYLE_BLOCK
 
 
 def test_save_profile_rotates_previous(tmp_path):

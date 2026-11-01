@@ -127,8 +127,16 @@ def style_command(
         cfg = load_app_config()
         library = make_library()
         posts, shots = style.gather_samples(library, cfg.style)
-        estimate = style.estimate_profile_usd(posts, shots, cfg)
-        typer.echo(f"Отправить {len(posts) + len(shots)} изображений (постов {len(posts)}, скриншотов {len(shots)}) "
+
+        def preview(asset, side: int) -> bytes | None:
+            path = library.preview(asset, side)
+            return images.jpeg_bytes(path, side) if path else None
+
+        samples = style.load_samples(posts, shots, preview)  # до подтверждения: считаем то, что уйдёт
+        sent_posts = [s.asset for s in samples if s.kind == "post"]
+        sent_shots = [s.asset for s in samples if s.kind == "screenshot"]
+        estimate = style.estimate_profile_usd(sent_posts, sent_shots, cfg)
+        typer.echo(f"Отправить {len(samples)} изображений (постов {len(sent_posts)}, скриншотов {len(sent_shots)}) "
                    f"модели {cfg.style.model}, ≈ ${estimate:.2f}?")
         try:
             confirmed = yes or typer.confirm("Продолжить?", default=False)
@@ -139,12 +147,7 @@ def style_command(
             raise typer.Exit(EXIT_ERROR)
         client = make_client()
         check_credentials(client)
-
-        def preview(asset, side: int) -> bytes | None:
-            path = library.preview(asset, side)
-            return images.jpeg_bytes(path, side) if path else None
-
-        profile = style.build_profile(client, cfg.style.model, cfg.cloud.effort, posts, shots, preview)
+        profile = style.build_profile(client, cfg.style.model, cfg.cloud.effort, samples)
         style.save_profile(STYLE_PATH, profile.text)
         usd = usage_usd(profile.input_tokens, profile.output_tokens, price_for(cfg.cloud, cfg.style.model))
         make_cache().add_spend(STYLE_SPEND_KEY, cfg.style.model, usd)
