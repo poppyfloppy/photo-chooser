@@ -5,46 +5,53 @@
 **Goal:** CLI для macOS, который по альбому Photos и темам собирает шорт-лист кадров для ленты и stories Instagram и копирует оригиналы в отдельную директорию.
 
 **Architecture:**
-- Python-пакет `photo_chooser`, конвейер: чтение альбома → локальные признаки (Apple Vision) → отсев мусора и дублей → фильтр темы (интервал + мультиязычная модель «изображение–текст») → оценка Claude группами → раскладка → экспорт и отчёт.
-- Внешние системы (Photos, Claude, модель эмбеддингов) спрятаны за интерфейсами, в тестах заменяются заглушками.
+- Python-пакет `photo_chooser`, конвейер:
+  - чтение альбома через PhotoKit (только чтение);
+  - локальные признаки (Apple Vision);
+  - отсев мусора и дублей;
+  - фильтр интервала;
+  - **первая ступень** — дешёвая модель Claude отбирает подходящие к теме кадры с черновыми оценками;
+  - **вторая ступень** — основная модель оценивает кандидатов;
+  - раскладка на ленту и stories → экспорт оригиналов и отчёт.
+- Внешние системы (Photos, Claude) спрятаны за интерфейсами, в тестах заменяются заглушками.
 - Всё посчитанное и оплаченное кэшируется в SQLite.
 
 **Tech Stack:**
 - Python 3.12, `uv`, `pytest`;
-- `osxphotos`;
-- `pyobjc-framework-Vision`, `pyobjc-framework-Quartz`, `pyobjc-framework-AVFoundation`;
+- `pyobjc-framework-Photos`, `pyobjc-framework-Vision`, `pyobjc-framework-Quartz`, `pyobjc-framework-AVFoundation`;
 - `anthropic` (официальный SDK);
-- `pydantic` v2, `PyYAML`, `typer`, `numpy`;
-- модель эмбеддингов выбирается в Task 1.
+- `pydantic` v2, `PyYAML`, `typer`, `numpy`.
 
 **Spec:** [SPEC.md](../../../SPEC.md)
 
 ## Global Constraints
 
 - macOS 26 (Tahoe), Apple Silicon. Python 3.12, зависимости и запуск через `uv`.
-- Photos **только на чтение**:
-  - никаких вызовов, меняющих медиатеку;
-  - `osxphotos.ExportOptions` только с `edited=False` и без опций записи (альбомы, ключевые слова, метаданные, sidecar).
-- Копируются только **оригиналы**. Пара RAW+JPEG/HEIC — один снимок, копируются оба файла с одним префиксом ранга.
+- Доступ к Photos **только через PhotoKit и только на чтение**. Никаких `performChanges` и других изменяющих вызовов. osxphotos не используется.
+- Terminal нужен только доступ **Photos** (System Settings → Privacy & Security → Photos), Full Disk Access не нужен (NFR-5).
+- Копируются только **оригиналы**: основной ресурс снимка (тип Photo) без правок Photos. RAW в MVP отдельно не поддерживается — вторая часть пары RAW+JPEG/HEIC не копируется.
 - Каждый запуск пишет в новую директорию `<output_dir>/<альбом>/<YYYY-MM-DD_HHMM>/<тема>/{feed,stories}/`, ничего не перезаписывает. Выходная директория внутри `*.photoslibrary` запрещена.
 - Шорт-лист по умолчанию: лента 20, stories 40.
-- Модель по умолчанию — `claude-haiku-5-5`. Цены по умолчанию (за 1 млн токенов, вход / выход):
+- Модели по умолчанию: `screen_model = claude-haiku-5-5` (первая ступень), `model = claude-haiku-5-5` (вторая). Цены по умолчанию (за 1 млн токенов, вход / выход):
   - haiku 0.10 / 0.50;
   - sonnet-5-5 2.00 / 10.00;
   - opus-5-5 4.00 / 20.00.
-- Лимит накопленной стоимости по альбому `max_cost_usd_per_album: 5.0`. Проверка выполняется до первого обращения к Claude. `--max-cost` заменяет лимит на один запуск.
+- Первая ступень — **один проход на запуск** по всем снимкам после отсева, со всеми темами с `query` и названием альбома; релевантность 1–10, кандидаты темы — релевантность ≥ `min_theme_relevance` (5). Вторая ступень — по каждой теме (SPEC FR-3 п.5–8).
+- Лимит скорости API: не больше 3 параллельных запросов; при `RateLimitError` после повторов SDK — ожидание и повтор (SPEC §9).
+- Лимит накопленной стоимости обеих ступеней по альбому `max_cost_usd_per_album: 5.0`. Проверка — до первого обращения к Claude, по всем темам запуска. `--max-cost` заменяет лимит на один запуск.
+- Часовой пояс — только `timezone` из trip.yaml или `--timezone` (IANA-имя). Обязателен, если у какой-либо темы есть интервал. Геотеги не используются.
 - Ключ API в конфигах не хранится: берётся из `ANTHROPIC_API_KEY` или профиля `ant auth login`. В `--no-cloud` ключ не нужен.
 - Кадр из Live Photo сохраняется в TIFF с суффиксом `_live-frame`; дата и GPS копируются из оригинала.
-- Числовые пороги и константы стоимости берутся из `docs/spike-findings.md` (Task 1). Там же фиксируется выбранная модель эмбеддингов.
-- Тексты CLI и `report.md` на русском. Причина выбора от Claude пишется на языке темы.
+- Числовые пороги и константы стоимости берутся из `docs/spike-findings.md` (Task 1).
+- Тексты CLI и `report.md` на русском. Причина выбора от Claude пишется на языке темы. Названия настроек macOS в сообщениях — английские.
 
 ## Review Focus
 
-1. **Имя темы или альбома с `/`, `:`, эмодзи или пробелами по краям.** Ожидание: валидное имя директории, запуск не падает. Тест в Task 11.
-2. **У снимка нет локального превью** (только в iCloud). Ожидание: снимок не анализируется, учитывается в отчёте как «нет превью», запуск продолжается. Тесты в Task 4 и Task 12.
-3. **Запуск прерван после того, как часть групп уже оплачена.** Ожидание: повторный запуск не платит за них снова, накопленная стоимость альбома равна реально потраченной. Тест в Task 8.
-4. **В теме ноль кандидатов** (запрос ничего не нашёл или интервал пуст). Ожидание: Claude не вызывается, отчёт с пустыми списками и недобором. Тест в Task 12.
-5. **Видеочасть Live Photo не скачалась.** Ожидание: копируется оригинал ключевого снимка, в отчёте пометка. Тест в Task 11.
+1. **Имя темы или альбома с `/`, `:`, эмодзи или пробелами по краям.** Ожидание: валидное имя директории, запуск не падает. Тест в Task 10.
+2. **PhotoKit не отдал превью** (ошибка или таймаут загрузки из iCloud). Ожидание: снимок не анализируется, учитывается в отчёте как «нет превью», запуск продолжается. Тест в Task 11.
+3. **Запуск прерван после того, как часть групп уже оплачена.** Ожидание: повторный запуск не платит за них снова, накопленная стоимость альбома равна реально потраченной. Тест в Task 7.
+4. **Первая ступень не признала подходящим ни один кадр** (или интервал пуст). Ожидание: вторая ступень не вызывается, отчёт с пустыми списками и недобором. Тест в Task 11.
+5. **Видеочасть Live Photo не скачалась.** Ожидание: копируется оригинал ключевого снимка, в отчёте пометка. Тест в Task 10.
 
 ---
 
@@ -53,26 +60,24 @@
 ```
 pyproject.toml, .gitignore
 src/photo_chooser/
-  models.py            # Asset, LocalFeatures, Judgment, AlbumRef — общие dataclass'ы
+  models.py            # Asset, LocalFeatures, Judgment, AlbumRef
   config.py            # AppConfig, TripConfig, Theme (pydantic) + загрузка YAML
-  cache.py             # SQLite: признаки, эмбеддинги, оценки, расходы
+  cache.py             # SQLite: признаки, оценки обеих ступеней, расходы
   library/
-    base.py            # PhotosLibrary Protocol + исключения
-    osxphotos_library.py
+    base.py            # PhotosLibrary Protocol, resolve_album, исключения
+    photokit_library.py
   images.py            # загрузка и масштабирование через ImageIO, JPEG-байты, TIFF-запись
   vision.py            # Vision: эстетика, utility, лица, feature print
   analysis/
     quality.py         # резкость, яркость, LocalFeatures, local_quality
     junk.py            # отсев мусора
     dedup.py           # кластеры дублей
-    encoder.py         # TextImageEncoder + реализация из Task 1
-    theme_filter.py    # интервал, релевантность, кандидаты
     live.py            # выбор кадра Live Photo
   judge/
     cost.py            # оценка стоимости, бюджет
-    prompt.py          # PROMPT_VERSION, системный промпт
-    claude_judge.py    # группы, вызов API, кэширование оценок
-  select.py            # пулы ленты и stories
+    prompts.py         # промпты и версии обеих ступеней
+    stages.py          # группы, вызов API, кэширование, учёт расходов
+  select.py            # интервал, кандидаты после первой ступени, пулы ленты и stories
   export.py            # имена, директории, сборка шорт-листа, экспорт
   report.py            # report.md
   pipeline.py          # оркестрация
@@ -86,53 +91,53 @@ docs/spike-findings.md
 
 ### Task 1: Spike — проверка предпосылок на медиатеке пользователя (throwaway)
 
-Код этого задания одноразовый. Результат — только `docs/spike-findings.md`. Выполняется вместе с пользователем: нужен доступ Терминала к Photos (его даёт пользователь) и альбом поездки с «Оптимизацией хранилища».
+Код этого задания одноразовый. Результат — только `docs/spike-findings.md`. Скрипт, обращающийся к Photos, запускает пользователь в своём Terminal: macOS не даёт процессу Claude доступ к Photos. Остальные шаги выполняются по файлам из `spike/out/`.
 
 **Files:**
-- Create: `spike/*.py` (одноразовые), `docs/spike-findings.md`, `.gitignore`
+- Create: `spike/*.py` (одноразовые), `docs/spike-findings.md`
 
 **Interfaces:**
-- Produces: `docs/spike-findings.md` со всеми полями из Step 9. Задачи 2–12 берут оттуда значения.
+- Produces: `docs/spike-findings.md` со всеми полями из Step 7. Задачи 2–11 берут оттуда значения.
 
-- [ ] **Step 1:** Git и `.gitignore` уже настроены (репозиторий `poppyfloppy/photo-chooser`, ветка `main`). Выполнить `uv init --package --name photo-chooser --python 3.12`. Добавить зависимости: `uv add osxphotos pyobjc-framework-Vision pyobjc-framework-Quartz pyobjc-framework-AVFoundation anthropic numpy`.
-- [ ] **Step 2: Чтение альбома.** `spike/read_album.py <album>` через `osxphotos.PhotosDB()` печатает для 20 снимков:
-  - `uuid`, `original_filename`, `date`, `tzoffset`;
-  - `width/height` и `original_width/original_height`, `orientation`;
-  - `live_photo`, `has_raw`, `israw`, `ismovie`, `screenshot`, `shared`;
-  - `iscloudasset`, `ismissing`, `path`, `path_derivatives`, `score.overall`.
+- [ ] **Step 1:** Git и `.gitignore` уже настроены (репозиторий `poppyfloppy/photo-chooser`, ветка `feature/mvp`). Выполнить `uv init --package --name photo-chooser --python 3.12` (если ещё не сделано). Установить зависимости: `uv add pyobjc-framework-Photos pyobjc-framework-Vision pyobjc-framework-Quartz pyobjc-framework-AVFoundation anthropic numpy`. osxphotos удалить, если он стоит.
+- [ ] **Step 2: Скрипт для пользователя** `spike/photokit_dump.py`:
+  - **без аргумента** — запрос доступа (`PHPhotoLibrary.requestAuthorizationForAccessLevel_handler_`, уровень ReadWrite: PhotoKit требует его и для чтения) и список альбомов с числом снимков;
+  - **с именем альбома** — для каждого снимка `localIdentifier`, `creationDate`, `pixelWidth/pixelHeight`, `mediaType`, `mediaSubtypes` (Live, скриншот), ресурсы (`PHAssetResource`: тип, `originalFilename`, `uniformTypeIdentifier`) → `spike/out/album.json`;
+  - **превью** с длинной стороной 1024 через `PHImageManager` (`PHImageRequestOptions`: `synchronous=True`, `networkAccessAllowed=True`, `deliveryMode=HighQualityFormat`) — до 400 снимков блоками по 50 подряд по всей поездке → `spike/out/previews/`; замерить время на превью;
+  - **оригиналы** снимков (обычный, Live Photo) через `PHAssetResourceManager.writeDataForAssetResource_toFile_options_completionHandler_` с `networkAccessAllowed=True` → `spike/out/export/`; время;
+  - сводка → `spike/out/summary.json`.
 
-  Зафиксировать:
-  - как выглядит снимок без часового пояса;
-  - какие размеры отражают итоговую ориентацию;
-  - есть ли локальное превью у снимков с `ismissing=True`;
-  - диапазон и наличие `score.overall`.
-- [ ] **Step 3: Экспорт.** `spike/export.py` выгружает в `spike/out/` три снимка, которых нет локально: обычный, пару RAW и Live Photo. Используется `osxphotos.PhotoExporter(photo).export(dest, options=ExportOptions(download_missing=True, use_photokit=True, edited=False, raw_photo=True, live_photo=True))`. Зафиксировать список полученных файлов и время скачивания. **Критерий провала:** альбом не читается (Step 2) или оригиналы и видео не скачиваются (Step 3). Тогда остановиться и обсудить с пользователем переход на Swift-хелпер (SPEC §11).
-- [ ] **Step 4: Vision через pyobjc на 50 превью.**
+  Пользователь запускает его в Terminal. **Критерий провала:** не работают доступ и чтение альбома или не скачиваются из iCloud оригиналы и видео. Тогда остановиться и обсудить с пользователем Swift-хелпер (SPEC §11).
+- [ ] **Step 3: Vision через pyobjc на превью.**
   - `VNCalculateImageAestheticsScoresRequest`: `overallScore`, `isUtility`;
   - `VNDetectFaceCaptureQualityRequest`;
   - `VNGenerateImageFeaturePrintRequest`.
 
-  Сравнить `computeDistance:` с L2-нормой векторов из `featurePrint.data()`. Зафиксировать, совпадают ли они, и типичные расстояния: внутри серии и между разными сценами.
-- [ ] **Step 5: Пороги отсева.** На тех же превью посчитать дисперсию лапласиана (оттенки серого, длинная сторона 1024) и среднюю яркость. Вместе с пользователем отметить явный брак и подобрать `junk_blur`, `duplicate_distance`, `duplicate_window_s`.
-- [ ] **Step 6: Модель «изображение–текст».** Зависимости ставятся в отдельную группу: `uv add --group spike …`. Сравнить кандидатов:
-  - open_clip `xlm-roberta-base-ViT-B-32` / `laion5b_s13b_b90k`;
-  - Hugging Face `google/siglip2-base-patch16-256`.
-
-  Если id модели не найден, взять ближайший мультиязычный вариант той же библиотеки и записать фактический id. Проверка: 5 запросов пользователя на русском и английском по 200 превью. Критерий выбора — доля релевантных кадров в топ-30. Зафиксировать победителя, пакет, время эмбеддинга 1000 превью и порог `theme_relevance`.
-- [ ] **Step 7: Стоимость.** Один вызов `claude-haiku-5-5` с группой из 20 JPEG-превью (длинная сторона 1024, quality 0.85) через `client.messages.parse` со схемой из Task 8 и `output_config={"effort": "medium"}`. Записать `usage.input_tokens`, `usage.output_tokens` и сравнить с формулой `ceil(w*h/750)` на картинку.
-- [ ] **Step 8: Live Photo.** `AVAssetImageGenerator` с нулевыми допусками извлекает 15 равномерных кадров из скачанного `.mov`. Зафиксировать разрешение кадра и время извлечения.
-- [ ] **Step 9: Записать `docs/spike-findings.md`.** Поля:
-  - `tz_missing_signal`, `orientation_fields`, `preview_source`, `photos_score_available`, `photos_score_range`;
-  - `featureprint_distance` (совпадает ли с `computeDistance`);
+  Сравнить `computeDistance:` с L2-нормой векторов из `featurePrint.data()`. Посчитать дисперсию лапласиана (оттенки серого, 1024) и среднюю яркость. Вместе с пользователем отметить явный брак и серии и подобрать `junk_blur`, `junk_dark_luma`, `junk_bright_luma`, `duplicate_distance`, `duplicate_window_s`.
+- [ ] **Step 4: Первая ступень на Haiku.**
+  - Пользователь даёт 5 запросов-тем.
+  - По ~200 превью прогнать черновой промпт первой ступени на `claude-haiku-5-5`: `client.messages.parse`, схема `ScreenOutput` из Task 7, `output_config={"effort": "medium"}`, группы по 20.
+  - Сформировать `spike/out/screen.html` — контактный лист по каждому запросу, кадры, отмеченные моделью, выделены.
+  - Пользователь отмечает пропуски и лишние. Посчитать полноту и точность, время на тему.
+- [ ] **Step 5: Стоимость.**
+  - По `usage` из Step 4: токенов на картинку против формулы `ceil(w*h/750)`, накладные расходы промпта на группу, выходных токенов на снимок.
+  - Один прогон группы второй ступени на `claude-haiku-5-5` со схемой `JudgeOutput`: выходных токенов на снимок с `reason`.
+- [ ] **Step 6: Live Photo.** `AVAssetImageGenerator` с нулевыми допусками извлекает 15 равномерных кадров из скачанной видеочасти. Разрешение кадра и время.
+- [ ] **Step 7: Записать `docs/spike-findings.md`.** Поля:
+  - `orientation_fields` (отражают ли `pixelWidth/Height` итоговую ориентацию);
+  - `live_video_resource_type`, `original_filename_source`;
+  - `preview_seconds_local`, `preview_seconds_icloud`;
+  - `featureprint_distance`;
   - `junk_blur`, `junk_dark_luma`, `junk_bright_luma`, `duplicate_distance`, `duplicate_window_s`;
-  - `encoder` (пакет + id модели), `theme_relevance`;
-  - `image_token_divisor`, `prompt_overhead_tokens`, `est_output_tokens_per_photo`;
-  - `live_frames_per_video`, `live_frame_resolution`.
-- [ ] **Step 10: Commit.**
+  - `image_token_divisor`, `prompt_overhead_tokens`, `est_output_tokens_per_photo_screen`, `est_output_tokens_per_photo_judge`;
+  - `screen_recall`, `screen_precision`, `screen_seconds_per_theme`;
+  - `live_frames_per_video`, `live_frame_resolution`;
+  - значения по умолчанию `candidates_per_theme`, `preview_long_side_px`, `group_size`.
+- [ ] **Step 8: Commit.**
 
 ```bash
-git add .gitignore pyproject.toml uv.lock SPEC.md docs/ spike/
-git commit -m "spike: verify osxphotos, Vision, encoder and token costs on macOS 26"
+git add pyproject.toml uv.lock .python-version src/ docs/spike-findings.md spike/
+git commit -m "spike: verify PhotoKit, Vision, Haiku screening and token costs on macOS 26"
 ```
 
 ---
@@ -145,44 +150,59 @@ git commit -m "spike: verify osxphotos, Vision, encoder and token costs on macOS
 
 **Interfaces:**
 - Produces:
-  - `models.Asset` (frozen dataclass): `uuid: str`, `filename: str`, `local_time: datetime` (naive, местное время съёмки), `tz_known: bool`, `width: int`, `height: int`, `is_live: bool`, `has_raw_pair: bool`, `is_screenshot: bool`, `preview_path: Path | None`, `photos_score: float | None`; свойство `is_vertical -> bool` (`height > width`; квадрат — не вертикальный).
-  - `models.AlbumRef(uuid: str, title: str, folder: str | None, count: int)`.
+  - `models.Asset` (frozen dataclass):
+    - поля: `uuid: str` (`localIdentifier` PhotoKit), `filename: str`, `taken_at: datetime` (aware, UTC), `width: int`, `height: int`, `is_live: bool`, `is_screenshot: bool`;
+    - свойство `is_vertical -> bool` (`height > width`; квадрат — не вертикальный).
+  - `models.AlbumRef(uuid: str, title: str, count: int)`.
   - `models.LocalFeatures(uuid: str, aesthetic: float | None, is_utility: bool, sharpness: float, mean_luma: float, face_quality: float | None, feature_print: bytes)`. `feature_print` — float32-байты вектора.
-  - `models.Judgment(uuid: str, matches_theme: bool, feed_score: int, stories_score: int, reason: str)`.
-  - `config.Theme` (pydantic): `name: str`, `query: str | None`, `start: datetime | None` (alias `from`), `end: datetime | None` (alias `to`); методы `key() -> str` (первые 16 hex sha256 от `name|query|start|end`) и `interval_only -> bool`.
-  - `config.TripConfig(album: str, themes: list[Theme])`.
-  - `config.Price(input: float, output: float)`.
-  - `config.ShortlistCfg(feed: int = 20, stories: int = 40)`.
-  - `config.CloudCfg(model: str, effort: Literal["low","medium","high","xhigh","max"] = "medium", pricing: dict[str, Price], max_cost_usd_per_album: float = 5.0, candidates_per_theme: int = 100, preview_long_side_px: int = 1024, group_size: int = 20)`.
+  - `models.Judgment(uuid: str, matches_theme: bool, feed_score: int, stories_score: int, reason: str)` — результат второй ступени.
+  - `models.Screening(uuid: str, relevance: dict[str, int], feed_score: int, stories_score: int)` — результат первой ступени; ключ `relevance` — `Theme.key()`.
+  - `config.Theme` (pydantic):
+    - поля: `name: str`, `query: str | None`, `start: datetime | None` (alias `from`), `end: datetime | None` (alias `to`);
+    - метод `key() -> str` — первые 16 hex sha256 от `name|query|start|end`;
+    - свойства `interval_only -> bool`, `has_interval -> bool`.
+  - `config.TripConfig(album: str, timezone: str | None, themes: list[Theme])`. Валидация:
+    - `timezone` — валидное IANA-имя (`zoneinfo.ZoneInfo`);
+    - обязателен, если у какой-либо темы `has_interval`;
+    - свойство `tz -> ZoneInfo | None`;
+    - свойство `query_themes -> list[Theme]` — темы с `query` в порядке файла.
+  - `config.themes_key(album_title: str, themes: list[Theme]) -> str` — первые 16 hex sha256 от названия альбома и упорядоченного списка `name|query` тем; ключ кэша первой ступени.
+  - `config.Price(input: float, output: float)`; `config.ShortlistCfg(feed: int = 20, stories: int = 40)`.
+  - `config.CloudCfg`: `screen_model: str = "claude-haiku-5-5"`, `model: str = "claude-haiku-5-5"`, `effort: Literal["low","medium","high","xhigh","max"] = "medium"`, `pricing: dict[str, Price]`, `max_cost_usd_per_album: float = 5.0`, `candidates_per_theme`, `preview_long_side_px`, `group_size` (по умолчанию из spike-findings).
   - `config.Thresholds`:
-    - из `docs/spike-findings.md`: `junk_blur`, `junk_dark_luma`, `junk_bright_luma`, `duplicate_distance`, `duplicate_window_s`, `theme_relevance`;
-    - заданные здесь: `min_feed_score: int = 6`, `min_stories_score: int = 4`, `live_frame_margin: float = 0.15`.
-  - `config.AppConfig(output_dir: Path = ~/Pictures/photo-chooser, shortlist: ShortlistCfg, cloud: CloudCfg, thresholds: Thresholds)`.
+    - из spike-findings: `junk_blur`, `junk_dark_luma`, `junk_bright_luma`, `duplicate_distance`, `duplicate_window_s`;
+    - заданные здесь: `min_theme_relevance: int = 5`, `min_feed_score: int = 6`, `min_stories_score: int = 4`, `live_frame_margin: float = 0.15`.
+  - `config.AppConfig(output_dir: Path = ~/Pictures/photo-chooser, shortlist, cloud, thresholds)`.
   - `config.load_app_config(path: Path | None = None) -> AppConfig`: по умолчанию `~/.config/photo-chooser/config.yaml`; если файла нет — значения по умолчанию.
   - `config.load_trip(path: Path) -> TripConfig`.
-  - `config.theme_from_args(name, query, start, end) -> Theme`.
-  - `config.ConfigError(Exception)`: сообщения на русском.
-- `tests/conftest.py`: фабрика `make_asset(**overrides) -> Asset` с разумными значениями по умолчанию.
+  - `config.trip_from_args(album, name, query, start, end, timezone) -> TripConfig`.
+  - `config.ConfigError(Exception)` — сообщения на русском.
+- `tests/conftest.py`: фабрика `make_asset(**overrides) -> Asset`.
 
 - [ ] **Step 1: Тесты.**
 
 ```python
-def test_theme_requires_query_or_interval():      # Theme(name="X") -> ConfigError
-def test_theme_interval_needs_both_bounds():      # только from -> ConfigError
-def test_theme_interval_start_before_end():       # from >= to -> ConfigError
-def test_theme_key_stable_and_sensitive():        # одинаковые поля -> одинаковый key; другой query -> другой
-def test_load_trip_parses_aliases(tmp_path):      # YAML с from/to "2026-03-14 05:00" -> start == datetime(2026,3,14,5,0)
+def test_theme_requires_query_or_interval():          # Theme(name="X") -> ConfigError
+def test_theme_interval_needs_both_bounds():          # только from -> ConfigError
+def test_theme_interval_start_before_end():           # from >= to -> ConfigError
+def test_theme_key_stable_and_sensitive()
+def test_timezone_required_when_any_theme_has_interval()   # без timezone -> ConfigError
+def test_timezone_not_required_for_query_only_themes()
+def test_timezone_must_be_iana_name():                # "Cairo" -> ConfigError; "Africa/Cairo" -> ok
+def test_load_trip_parses_aliases(tmp_path):          # from/to "2026-03-14 05:00" -> start == datetime(2026,3,14,5,0)
 def test_app_config_defaults_when_file_missing(tmp_path):
     cfg = load_app_config(tmp_path / "nope.yaml")
     assert cfg.shortlist.feed == 20 and cfg.shortlist.stories == 40
-    assert cfg.cloud.model == "claude-haiku-5-5" and cfg.cloud.max_cost_usd_per_album == 5.0
+    assert cfg.cloud.screen_model == "claude-haiku-5-5" and cfg.cloud.model == "claude-haiku-5-5"
+    assert cfg.cloud.max_cost_usd_per_album == 5.0
     assert cfg.cloud.pricing["claude-opus-5-5"].output == 20.00
-def test_app_config_partial_override(tmp_path):   # YAML только с shortlist.feed: 10 -> stories остаётся 40
-def test_asset_is_vertical():                     # 3024x4032 -> True; 4032x4032 -> False
+def test_app_config_partial_override(tmp_path)        # только shortlist.feed: 10 -> stories остаётся 40
+def test_asset_is_vertical()                          # 3024x4032 -> True; 4032x4032 -> False
+def test_themes_key_depends_on_album_and_theme_list() # другой порядок/запрос/альбом -> другой ключ; интервал не влияет
 ```
 
-- [ ] **Step 2:** `uv run pytest tests/test_config.py -v` → FAIL (модули не существуют).
-- [ ] **Step 3:** Реализовать `models.py` и `config.py` по Interfaces. Добавить зависимости: `uv add pydantic pyyaml typer` и `uv add --dev pytest`.
+- [ ] **Step 2:** `uv run pytest tests/test_config.py -v` → FAIL.
+- [ ] **Step 3:** Реализовать по Interfaces. Зависимости: `uv add pydantic pyyaml typer`, `uv add --dev pytest`.
 - [ ] **Step 4:** `uv run pytest tests/test_config.py -v` → PASS.
 - [ ] **Step 5: Commit** — `feat: config and domain models`.
 
@@ -195,76 +215,80 @@ def test_asset_is_vertical():                     # 3024x4032 -> True; 4032x4032
 - Test: `tests/test_cache.py`
 
 **Interfaces:**
-- Consumes: `LocalFeatures`, `Judgment` (Task 2).
+- Consumes: `LocalFeatures`, `Judgment`, `Screening` (Task 2).
 - Produces: `Cache(path: Path)`; по умолчанию путь `~/Library/Caches/photo-chooser/cache.sqlite`. Методы:
   - `get_features(uuid) -> LocalFeatures | None` / `put_features(f)`;
-  - `get_embedding(uuid, encoder: str) -> np.ndarray | None` / `put_embedding(uuid, encoder, vec)`;
-  - `get_judgment(uuid, theme_key, model, prompt_version) -> Judgment | None` / `put_judgments(items: list[Judgment], theme_key, model, prompt_version)`;
+  - `get_screening(uuid, themes_key, model, prompt_version) -> Screening | None` / `put_screenings(items: list[Screening], themes_key, model, prompt_version)` — первая ступень;
+  - `get_judgment(uuid, theme_key, model, prompt_version) -> Judgment | None` / `put_judgments(items: list[Judgment], theme_key, model, prompt_version)` — вторая ступень;
   - `add_spend(album_uuid, model, usd)` / `album_spend(album_uuid) -> float`.
 
 - [ ] **Step 1: Тесты.**
 
 ```python
 def test_features_roundtrip(tmp_path)
-def test_embedding_roundtrip_float32(tmp_path)          # np.allclose после чтения
 def test_judgment_keyed_by_model_and_prompt(tmp_path):
-    c.put_judgments([j], "t1", "claude-haiku-5-5", "1")
-    assert c.get_judgment(j.uuid, "t1", "claude-haiku-5-5", "1") == j
-    assert c.get_judgment(j.uuid, "t1", "claude-opus-5-5", "1") is None
-    assert c.get_judgment(j.uuid, "t1", "claude-haiku-5-5", "2") is None
-def test_album_spend_accumulates(tmp_path):              # 0.10 + 0.25 -> 0.35 (approx); другой альбом -> 0.0
+    c.put_judgments([j], "t1", "claude-haiku-5-5", "judge-1")
+    assert c.get_judgment(j.uuid, "t1", "claude-haiku-5-5", "judge-1") == j
+    assert c.get_judgment(j.uuid, "t1", "claude-opus-5-5", "judge-1") is None
+    assert c.get_judgment(j.uuid, "t1", "claude-haiku-5-5", "judge-2") is None
+def test_screening_roundtrip_keyed_by_themes_key(tmp_path)   # relevance dict сохраняется; другой themes_key -> None
+def test_album_spend_accumulates(tmp_path)              # 0.10 + 0.25 -> 0.35 (approx); другой альбом -> 0.0
 def test_cache_survives_reopen(tmp_path)
 ```
 
 - [ ] **Step 2:** `uv run pytest tests/test_cache.py -v` → FAIL.
-- [ ] **Step 3:** Реализовать на `sqlite3`. Таблицы: `features(uuid PK, json)`, `embeddings(uuid, encoder, vec BLOB, PK(uuid, encoder))`, `judgments(uuid, theme_key, model, prompt_version, json, PK(all four))`, `spend(album_uuid, model, usd, created_at)`. Каждая запись — сразу commit.
+- [ ] **Step 3:** Реализовать на `sqlite3`. Таблицы: `features(uuid PK, json)`, `screenings(uuid, themes_key, model, prompt_version, json, PK(all four))`, `judgments(uuid, theme_key, model, prompt_version, json, PK(all four))`, `spend(album_uuid, model, usd, created_at)`. Каждая запись — сразу commit.
 - [ ] **Step 4:** `uv run pytest tests/test_cache.py -v` → PASS.
 - [ ] **Step 5: Commit** — `feat: sqlite cache for features, judgments and spend`.
 
 ---
 
-### Task 4: Адаптер Photos (только чтение)
+### Task 4: Адаптер Photos на PhotoKit (только чтение)
 
 **Files:**
-- Create: `src/photo_chooser/library/base.py`, `src/photo_chooser/library/osxphotos_library.py`
+- Create: `src/photo_chooser/library/base.py`, `src/photo_chooser/library/photokit_library.py`
 - Test: `tests/test_library.py`, `tests/fakes.py`
 
 **Interfaces:**
 - Consumes: `Asset`, `AlbumRef` (Task 2).
 - Produces:
   - `PhotosLibrary` (Protocol):
-    - `albums() -> list[AlbumRef]`;
+    - `albums() -> list[AlbumRef]` — только обычные альбомы пользователя;
     - `find_album(title: str) -> AlbumRef`;
-    - `assets(album: AlbumRef) -> list[Asset]` — только фото, видео исключены, общие альбомы не поддерживаются;
-    - `export_originals(asset, dest_dir: Path) -> list[Path]` — 1 файл или 2 для пары RAW;
+    - `assets(album: AlbumRef) -> list[Asset]` — только изображения;
+    - `preview(asset, long_side: int) -> Path | None` — JPEG в `~/Library/Caches/photo-chooser/previews/<safe uuid>_<long_side>.jpg`; уже существующий файл повторно не запрашивается; ошибка или таймаут → `None`;
+    - `export_original(asset, dest_dir: Path) -> Path` — основной ресурс снимка (тип Photo);
     - `export_live_video(asset, dest_dir: Path) -> Path`.
-  - Исключения:
+  - `base.resolve_album(title, albums) -> AlbumRef`. Исключения:
     - `AlbumNotFound(title, similar: list[str])` — `difflib.get_close_matches(n=5, cutoff=0.5)`;
-    - `AlbumAmbiguous(title, matches: list[AlbumRef])` — несколько альбомов с одним именем;
-    - `DownloadError(uuid, reason)` — после 3 попыток;
-    - `PhotosAccessError` — с инструкцией, какой доступ выдать Терминалу.
-  - `osxphotos_library.asset_from_photoinfo(p) -> Asset | None`: чистая функция маппинга. Возвращает `None` для видео. `preview_path` — наибольший существующий файл из `p.path_derivatives`, иначе `p.path`, если файл существует, иначе `None`. `tz_known` и ориентация — по полям из `docs/spike-findings.md`. `photos_score` приводится к 0..1 по диапазону `photos_score_range`; если оценка недоступна — `None`.
-  - `tests/fakes.py: FakeLibrary(albums: list[AlbumRef], assets: dict[str, list[Asset]], files: dict[str, list[Path]], live: dict[str, Path], failing: set[str])`.
+    - `AlbumAmbiguous(title, matches: list[AlbumRef])`.
+  - Прочие исключения:
+    - `DownloadError(uuid, reason)` — после 3 попыток, таймаут `DOWNLOAD_TIMEOUT_S = 120`;
+    - `PhotosAccessError` — доступ запрещён или ограничен; сообщение «System Settings → Privacy & Security → Photos → включите Terminal».
+  - `photokit_library.asset_from_phasset(a, resources: list) -> Asset | None` — чистая функция:
+    - не изображение → `None`;
+    - `is_live` и `is_screenshot` — по битам `mediaSubtypes`;
+    - `filename` — `originalFilename` основного ресурса;
+    - `taken_at` — из `creationDate.timeIntervalSince1970()` в UTC;
+    - `width/height` — по `orientation_fields`.
+  - `PhotoKitLibrary`: асинхронные обработчики PhotoKit синхронизируются через `threading.Event` с таймаутом. Превью — `PHImageRequestOptions(synchronous=True, networkAccessAllowed=True, deliveryMode=HighQualityFormat)`, JPEG через `NSBitmapImageRep`. Никаких изменяющих вызовов.
+  - `tests/fakes.py: FakeLibrary(albums, assets: dict[str, list[Asset]], previews: dict[str, Path], files: dict[str, Path], live: dict[str, Path], failing: set[str])`.
 
-- [ ] **Step 1: Тесты** (stub-объекты `types.SimpleNamespace` вместо `PhotoInfo`).
+- [ ] **Step 1: Тесты** (`types.SimpleNamespace` вместо объектов PhotoKit).
 
 ```python
-def test_mapping_skips_video():                       # ismovie=True -> None
-def test_mapping_raw_pair_and_live()                  # has_raw=True -> has_raw_pair; live_photo=True -> is_live
-def test_mapping_local_time_uses_photo_timezone():    # date=2026-03-14T07:00+02:00 -> local_time 07:00, tz_known True
-def test_mapping_missing_timezone_uses_system_tz()    # сигнал из spike-findings -> tz_known False, local_time в системной tz
-def test_mapping_no_preview_gives_none(tmp_path):     # derivatives не существуют, path None -> preview_path None
+def test_mapping_skips_non_image()
+def test_mapping_live_and_screenshot_bits()
+def test_mapping_filename_from_primary_resource()
+def test_mapping_taken_at_is_utc():                   # timeIntervalSince1970=1773466200 -> datetime(..., tzinfo=UTC)
 def test_find_album_not_found_lists_similar():        # "Египт 2026" -> AlbumNotFound, "Египет 2026" in e.similar
-def test_find_album_ambiguous():                      # два AlbumRef с одним title -> AlbumAmbiguous
+def test_find_album_ambiguous()
 ```
 
 - [ ] **Step 2:** `uv run pytest tests/test_library.py -v` → FAIL.
-- [ ] **Step 3:** Реализовать `OsxPhotosLibrary`:
-  - `PhotosDB()` создаётся лениво. `PermissionError` или ошибка открытия базы → `PhotosAccessError`.
-  - Экспорт через `PhotoExporter` с опциями из Task 1 Step 3, 3 попытки, затем `DownloadError`.
-  - `find_album` / `AlbumNotFound` / `AlbumAmbiguous` реализовать один раз в `base.py` как функцию `resolve_album(title, albums)`. Её используют и `OsxPhotosLibrary`, и `FakeLibrary`.
+- [ ] **Step 3:** Реализовать по Interfaces.
 - [ ] **Step 4:** `uv run pytest tests/test_library.py -v` → PASS.
-- [ ] **Step 5: Commit** — `feat: read-only Photos adapter on osxphotos`.
+- [ ] **Step 5: Commit** — `feat: read-only Photos adapter on PhotoKit`.
 
 ---
 
@@ -272,35 +296,33 @@ def test_find_album_ambiguous():                      # два AlbumRef с од�
 
 **Files:**
 - Create: `src/photo_chooser/images.py`, `src/photo_chooser/vision.py`, `src/photo_chooser/analysis/quality.py`
-- Test: `tests/test_quality.py` (тестовые изображения генерируются в фикстурах через ImageIO/numpy; Vision настоящий)
+- Test: `tests/test_quality.py` (изображения генерируются в фикстурах; Vision настоящий)
 
 **Interfaces:**
 - Produces:
   - `images.load_cgimage(path: Path, long_side: int) -> CGImage` — `CGImageSourceCreateThumbnailAtIndex` с учётом ориентации.
   - `images.gray_array(img: CGImage) -> np.ndarray` — float32, значения 0..1.
   - `images.jpeg_bytes(path: Path, long_side: int, quality: float = 0.85) -> bytes`.
-  - `images.write_tiff(img: CGImage, dest: Path, metadata_from: Path) -> None` — свойства EXIF/GPS/TIFF копируются из `CGImageSourceCopyPropertiesAtIndex(metadata_from)`.
+  - `images.write_tiff(img: CGImage, dest: Path, metadata_from: Path) -> None` — EXIF/GPS/TIFF копируются из `CGImageSourceCopyPropertiesAtIndex(metadata_from)`.
   - `vision.VisionResult(aesthetic: float | None, is_utility: bool, face_quality: float | None, feature_print: np.ndarray)`; `aesthetic` = `(overallScore + 1) / 2`.
   - `vision.analyze(img: CGImage) -> VisionResult`.
   - `quality.sharpness(gray) -> float` — дисперсия лапласиана 3×3.
   - `quality.mean_luma(gray) -> float`.
-  - `quality.compute_features(asset: Asset, long_side: int = 1024) -> LocalFeatures`.
-  - `quality.percentile_ranks(values: list[float]) -> list[float]` — значения 0..1.
-  - `quality.local_quality(f: LocalFeatures, photos_score: float | None, sharpness_rank: float) -> float`. Веса: aesthetic 0.4, sharpness_rank 0.3, photos_score 0.2, face_quality 0.1. Отсутствующие компоненты (`None`) исключаются, оставшиеся веса нормируются до суммы 1.
-  - `quality.feature_distance(a: bytes, b: bytes) -> float` — L2 (если spike подтвердил совпадение с `computeDistance`).
+  - `quality.compute_features(uuid: str, preview: Path, long_side: int = 1024) -> LocalFeatures`.
+  - `quality.percentile_ranks(values: list[float]) -> list[float]`.
+  - `quality.local_quality(f: LocalFeatures, sharpness_rank: float) -> float`. Веса: aesthetic 0.5, sharpness_rank 0.35, face_quality 0.15. Компоненты `None` исключаются, оставшиеся веса нормируются до суммы 1.
+  - `quality.feature_distance(a: bytes, b: bytes) -> float` — L2.
 
 - [ ] **Step 1: Тесты.**
 
 ```python
-def test_blurred_image_less_sharp(tmp_path):          # шум vs тот же шум после гаусс-размытия
-def test_black_image_low_luma(tmp_path):              # mean_luma < 0.03
-def test_feature_distance_self_zero(tmp_path):        # == 0; другое изображение -> > 0
-def test_local_quality_renormalizes_missing():
-    f = make_features(aesthetic=1.0, face_quality=None)
-    assert local_quality(f, photos_score=None, sharpness_rank=1.0) == pytest.approx(1.0)
-def test_local_quality_weights():                     # aesthetic=0, sharp=1, photos=1, face=1 -> 0.6
+def test_blurred_image_less_sharp(tmp_path)
+def test_black_image_low_luma(tmp_path)               # < 0.03
+def test_feature_distance_self_zero(tmp_path)         # == 0; другое изображение -> > 0
+def test_local_quality_renormalizes_missing():        # aesthetic=1.0, face=None, sharp_rank=1.0 -> 1.0
+def test_local_quality_weights():                     # aesthetic=0, sharp=1, face=1 -> 0.5
 def test_percentile_ranks_bounds():                   # [3,1,2] -> [1.0, 0.0, 0.5]
-def test_write_tiff_copies_date_and_gps(tmp_path):    # JPEG с EXIF DateTimeOriginal + GPS -> TIFF содержит те же значения
+def test_write_tiff_copies_date_and_gps(tmp_path)
 ```
 
 - [ ] **Step 2:** `uv run pytest tests/test_quality.py -v` → FAIL.
@@ -317,143 +339,128 @@ def test_write_tiff_copies_date_and_gps(tmp_path):    # JPEG с EXIF DateTimeOri
 - Test: `tests/test_junk_dedup.py`
 
 **Interfaces:**
-- Consumes: `Asset`, `LocalFeatures`, `Thresholds`, `feature_distance`, `local_quality`.
+- Consumes: `Asset`, `LocalFeatures`, `Thresholds`, `feature_distance`.
 - Produces:
-  - `junk.junk_reason(asset: Asset, f: LocalFeatures, th: Thresholds) -> str | None`. Порядок проверок и тексты причин: `"скриншот"` (`asset.is_screenshot`), `"утилитарный кадр"` (`f.is_utility`), `"смаз"` (`sharpness < junk_blur`), `"слишком тёмный"` (`mean_luma < junk_dark_luma`), `"пересвечен"` (`mean_luma > junk_bright_luma`).
-  - `dedup.cluster(items: list[tuple[Asset, LocalFeatures]], th: Thresholds) -> list[list[str]]` — кластеры uuid.
-  - `dedup.representatives(clusters: list[list[str]], quality: dict[str, float]) -> list[str]` — лучший из каждого кластера.
+  - `junk.junk_reason(asset, f, th) -> str | None`. Порядок проверок и тексты причин: `"скриншот"`, `"утилитарный кадр"`, `"смаз"` (`sharpness < junk_blur`), `"слишком тёмный"`, `"пересвечен"`.
+  - `dedup.cluster(items: list[tuple[Asset, LocalFeatures]], th) -> list[list[str]]` — сортировка по `taken_at`, окно `duplicate_window_s`, union-find по парам с `feature_distance ≤ duplicate_distance`.
+  - `dedup.representatives(clusters, quality: dict[str, float]) -> list[str]`.
 
 - [ ] **Step 1: Тесты.**
 
 ```python
 def test_junk_reasons_order()                          # скриншот с плохой резкостью -> "скриншот"
 def test_good_photo_not_junk()
-def test_cluster_requires_both_time_and_similarity():
-    # A,B: 10 с, distance < th -> один кластер; C: похож на A, но через 2 часа -> отдельно; D: рядом по времени, но не похож -> отдельно
-def test_cluster_is_transitive()                       # A~B, B~C (в окне) -> {A,B,C}
+def test_cluster_requires_both_time_and_similarity()   # A,B рядом и похожи -> вместе; C похож, но через 2 ч -> отдельно; D рядом, но не похож -> отдельно
+def test_cluster_is_transitive()
 def test_representative_is_best_quality()
 ```
 
 - [ ] **Step 2:** `uv run pytest tests/test_junk_dedup.py -v` → FAIL.
-- [ ] **Step 3:** Реализовать. `cluster`: сортировка по `local_time`, скользящее окно `duplicate_window_s`, union-find по парам с `feature_distance ≤ duplicate_distance`.
+- [ ] **Step 3:** Реализовать.
 - [ ] **Step 4:** `uv run pytest tests/test_junk_dedup.py -v` → PASS.
 - [ ] **Step 5: Commit** — `feat: junk filter and duplicate clustering`.
 
 ---
 
-### Task 7: Фильтр темы и кандидаты
+### Task 7: Облачные ступени, стоимость и бюджет
 
 **Files:**
-- Create: `src/photo_chooser/analysis/encoder.py`, `src/photo_chooser/analysis/theme_filter.py`
-- Test: `tests/test_theme_filter.py`; `FakeEncoder` в `tests/fakes.py`
+- Create: `src/photo_chooser/judge/cost.py`, `src/photo_chooser/judge/prompts.py`, `src/photo_chooser/judge/stages.py`
+- Test: `tests/test_cost.py`, `tests/test_stages.py`; `FakeClient` в `tests/fakes.py`
 
 **Interfaces:**
-- Consumes: `Asset`, `Theme`, `Cache`, `Thresholds`.
+- Consumes: `Asset`, `Theme`, `themes_key`, `Judgment`, `Screening`, `Cache`, `CloudCfg`, `Price`.
 - Produces:
-  - `encoder.TextImageEncoder` (Protocol): `name: str`, `embed_images(paths: list[Path]) -> np.ndarray` (n×d, L2-нормированные), `embed_text(text: str) -> np.ndarray` (d,).
-  - `encoder.make_encoder() -> TextImageEncoder` — модель из `docs/spike-findings.md`. Тяжёлые зависимости ставятся через `uv add` в этом задании.
-  - `theme_filter.in_interval(asset: Asset, theme: Theme) -> bool` — границы включительно, сравнение `asset.local_time` с наивными `start/end`; тема без интервала → `True`.
-  - `theme_filter.relevance(enc, cache: Cache, assets: list[Asset], query: str) -> dict[str, float]` — косинус; эмбеддинги изображений берутся из кэша или считаются батчами и кладутся в кэш.
-  - `theme_filter.candidates(assets: list[Asset], quality: dict[str, float], theme: Theme, rel: dict[str, float] | None, th: Thresholds, limit: int) -> list[Asset]` — интервал → релевантность (≥ `theme_relevance`; при `rel=None` фильтр не применяется) → сортировка по `quality` по убыванию → первые `limit`.
-
-- [ ] **Step 1: Тесты.**
-
-```python
-def test_in_interval_inclusive_bounds()                # ровно from и ровно to -> True
-def test_in_interval_uses_local_wall_clock()           # local_time 23:30 14 марта входит в [14.03 00:00, 14.03 23:59]
-def test_relevance_uses_cache(tmp_path):               # второй вызов не вызывает FakeEncoder.embed_images
-def test_candidates_interval_only_ranks_by_quality()   # rel=None, limit=2 -> два лучших по quality внутри интервала
-def test_candidates_query_threshold()                  # rel ниже порога отсекается
-def test_candidates_query_and_interval_both_required()
-```
-
-- [ ] **Step 2:** `uv run pytest tests/test_theme_filter.py -v` → FAIL.
-- [ ] **Step 3:** Реализовать по Interfaces.
-- [ ] **Step 4:** `uv run pytest tests/test_theme_filter.py -v` → PASS.
-- [ ] **Step 5: Commit** — `feat: theme filter by interval and text-image relevance`.
-
----
-
-### Task 8: Оценка Claude, стоимость и бюджет
-
-**Files:**
-- Create: `src/photo_chooser/judge/cost.py`, `src/photo_chooser/judge/prompt.py`, `src/photo_chooser/judge/claude_judge.py`
-- Test: `tests/test_cost.py`, `tests/test_judge.py`; `FakeClient` в `tests/fakes.py`
-
-**Interfaces:**
-- Consumes: `Asset`, `Theme`, `Judgment`, `Cache`, `AppConfig.cloud`, `images.jpeg_bytes`.
-- Produces:
-  - `cost.image_tokens(width: int, height: int, long_side: int) -> int` — масштаб до `long_side`, затем `ceil(w*h/IMAGE_TOKEN_DIVISOR)`. Константы `IMAGE_TOKEN_DIVISOR`, `PROMPT_OVERHEAD_TOKENS`, `EST_OUTPUT_TOKENS_PER_PHOTO` берутся из spike-findings.
-  - `cost.estimate_usd(assets: list[Asset], cfg: CloudCfg, model: str) -> float`.
-  - `cost.usage_usd(input_tokens: int, output_tokens: int, price: Price) -> float`.
-  - `cost.price_for(cfg: CloudCfg, model: str) -> Price` — нет цены → `UnknownModelPrice(model)`.
-  - `cost.check_budget(spent: float, estimate: float, limit: float) -> None` — превышение → `BudgetExceeded(spent, estimate, limit)`.
-  - `prompt.PROMPT_VERSION = "1"`; `prompt.SYSTEM_PROMPT` содержит:
-    - роль — фоторедактор для Instagram;
-    - рубрику `feed_score` 1–10: композиция, свет, визуальная сила;
-    - рубрику `stories_score` 1–10: люди и эмоции, интересное в контексте темы, о чём стоит рассказать; изъяны допустимы;
-    - `matches_theme`; для темы только с интервалом всегда `true`;
-    - указание писать `reason` одним предложением на языке темы;
-    - указание оценивать каждый кадр с `id` из подписи.
-  - `claude_judge.GroupItem(BaseModel)`: `id: str`, `matches_theme: bool`, `feed_score: int`, `stories_score: int`, `reason: str`; `GroupJudgment(BaseModel)`: `items: list[GroupItem]`.
-  - `claude_judge.make_groups(cands: list[Asset], quality: dict[str, float], size: int) -> list[list[Asset]]` — раздача по кругу в порядке убывания quality в `ceil(n/size)` групп.
-  - `claude_judge.ClaudeJudge(client, model: str, effort: str, preview: Callable[[Asset], bytes])`, метод `judge_group(theme: Theme, group: list[Asset]) -> GroupResult(judgments: list[Judgment], unjudged: list[str], refused: bool, input_tokens: int, output_tokens: int)`.
-  - `claude_judge.judge_theme(judge, cache, theme, cands, quality, cfg: AppConfig, album_uuid: str, model: str) -> JudgeOutcome(judgments: dict[str, Judgment], unjudged: list[str], usd: float)`. Сначала берёт оценки из кэша; запросы — только для некэшированных. После **каждой** группы сразу вызывает `cache.put_judgments` и `cache.add_spend`.
+  - `cost`:
+    - `image_tokens(width, height, long_side) -> int` — масштаб до `long_side`, затем `ceil(w*h/IMAGE_TOKEN_DIVISOR)`;
+    - константы из spike-findings: `IMAGE_TOKEN_DIVISOR = 750`, `PROMPT_OVERHEAD_TOKENS = 500`, `EST_OUTPUT_TOKENS_SCREEN = 105`, `EST_OUTPUT_TOKENS_JUDGE = 80`;
+    - `price_for(cfg: CloudCfg, model) -> Price` — нет цены → `UnknownModelPrice(model)`;
+    - `estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_model, judge_model) -> float` — `n_screen` снимков на первой ступени (один проход), `n_judge[i]` кандидатов темы i на второй; превью 4:3 при `preview_long_side_px`, группы по `group_size`;
+    - `usage_usd(input_tokens, output_tokens, price) -> float`;
+    - `check_budget(spent, estimate, limit) -> None` — превышение → `BudgetExceeded(spent, estimate, limit)`.
+  - `prompts`:
+    - `SCREEN_PROMPT_VERSION = "screen-1"`, `JUDGE_PROMPT_VERSION = "judge-1"`;
+    - `SCREEN_SYSTEM_PROMPT` — промпт варианта B из `spike/screen_probe_v2.py` (`SYSTEM`) без изменений по смыслу: распределение по темам одной поездки; аббревиатуры и темы, определённые через другие; `matches` с релевантностью 1–10, ниже 5 не указывать, кадр может не подходить ни к одной теме; черновые `feed_score` и `stories_score`;
+    - `JUDGE_SYSTEM_PROMPT` — промпт из `spike/judge_probe.py` (`SYSTEM`): роль фоторедактора для Instagram; `matches_theme`; рубрики `feed_score` и `stories_score` (изъяны допустимы); `reason` — одно предложение на языке темы.
+  - `stages`:
+    - pydantic-схемы ответов: `ScreenMatch(theme: int, relevance: int)`, `ScreenItem(id, matches: list[ScreenMatch], feed_score, stories_score)`, `ScreenOutput(items)`; `JudgeItem(id, matches_theme, feed_score, stories_score, reason)`, `JudgeOutput(items)`;
+    - `call_model(client, model, effort, system, content, output_model) -> response`:
+      - `client.messages.parse(model=…, max_tokens=16000, system=…, messages=[{"role": "user", "content": content}], output_format=output_model, output_config={"effort": effort})`;
+      - для `FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}` — `client.beta.messages.parse(…, betas=["server-side-fallback-2026-07-01"], fallbacks="default")`;
+      - `RateLimitError` после повторов SDK → пауза `RATE_LIMIT_SLEEP_S = 20` и повтор, до 12 попыток;
+    - `image_content(group, preview) -> list[dict]` — для каждого снимка `{"type": "text", "text": "id: pNN"}` и картинка base64 `image/jpeg`;
+    - `make_groups(assets, order: dict[str, float], size) -> list[list[Asset]]` — раздача по кругу в порядке убывания `order` в `ceil(n/size)` групп;
+    - `ScreenRunner(client, model, effort, preview: Callable[[Asset], bytes])`, метод `run_group(album_title, themes: list[Theme], group) -> GroupResult[Screening]`. В конце запроса текст `Trip album: «…»` и пронумерованный список тем; номер темы `n` → `themes[n-1].key()`, неизвестные номера отбрасываются, оценки приводятся к 1..10;
+    - `JudgeRunner(client, model, effort, preview)`, метод `run_group(theme, group) -> GroupResult[Judgment]`. В конце запроса текст `Theme: «…»`;
+    - `GroupResult(items: list, unjudged: list[str], refused: bool, input_tokens: int, output_tokens: int)`;
+    - `run_screen(runner, cache, album_title, album_uuid, themes, assets, cfg) -> StageOutcome[Screening]`:
+      - кэш по `themes_key(album_title, themes)`, `runner.model`, `SCREEN_PROMPT_VERSION`;
+      - группы по времени съёмки;
+    - `run_judge(runner, cache, theme, assets, order, cfg, album_uuid) -> StageOutcome[Judgment]`:
+      - кэш по `theme.key()`, `runner.model`, `JUDGE_PROMPT_VERSION`;
+      - группы через `make_groups`;
+    - общее для обеих ступеней:
+      - `StageOutcome(results: dict[str, T], unjudged: list[str], sent: int, usd: float)`;
+      - запросы только для некэшированных, не больше `MAX_PARALLEL_REQUESTS = 3` одновременно;
+      - после **каждой** группы сразу запись в кэш и `cache.add_spend`.
 
 - [ ] **Step 1: Тесты `tests/test_cost.py`.**
 
 ```python
-def test_image_tokens_scales_to_long_side():           # 4032x3024 при long_side=1024 -> ceil(1024*768/divisor)
-def test_estimate_includes_overhead_and_output()
-def test_usage_usd_haiku():                            # 1_000_000 in + 1_000_000 out -> 0.60
+def test_image_tokens_scales_to_long_side()
+def test_estimate_run_counts_screen_once_and_judge_per_theme():  # n_screen=1000, n_judge=[100,100]: первая ступень по цене screen_model один раз
+def test_usage_usd_haiku():                           # 1M in + 1M out -> 0.60
 def test_price_for_unknown_model_raises()
-def test_check_budget():                               # spent 4.0 + est 1.5, limit 5 -> BudgetExceeded; limit 6 -> ok
+def test_check_budget()                               # 4.0 + 1.5 > 5 -> BudgetExceeded; limit 6 -> ok
 ```
 
-- [ ] **Step 2: Тесты `tests/test_judge.py`** (`FakeClient` возвращает заданный `parsed_output`/`stop_reason`/`usage` и считает вызовы).
+- [ ] **Step 2: Тесты `tests/test_stages.py`** (`FakeClient` возвращает заданный `parsed_output`/`stop_reason`/`usage`, может бросать `RateLimitError`, считает вызовы).
 
 ```python
-def test_make_groups_spreads_quality()                 # 40 кандидатов, size 20 -> в каждой группе есть и топ, и хвост
-def test_judge_group_maps_short_ids_and_clamps():      # id "p01".. -> uuid; feed_score 12 -> 10, 0 -> 1
-def test_judge_group_missing_ids_are_unjudged()
-def test_judge_group_refusal():                        # stop_reason="refusal" -> refused True, все unjudged, usage учтён
-def test_judge_theme_uses_cache_and_skips_api(tmp_path)   # все в кэше -> 0 вызовов, usd 0
+def test_make_groups_spreads_order()
+def test_screen_maps_theme_numbers_to_keys():         # matches [{theme:2, relevance:8}] -> relevance {themes[1].key(): 8}
+def test_screen_drops_unknown_theme_numbers_and_clamps()   # theme 9 при 8 темах отбрасывается; relevance 12 -> 10
+def test_screen_request_lists_album_and_themes()      # последний text-блок: «Trip album: «Egypt.26»» и «1. Пирамиды…»
+def test_screen_cache_keyed_by_theme_set(tmp_path)    # тот же набор тем -> 0 вызовов; добавлена тема -> вызовы снова
+def test_judge_maps_short_ids_and_clamps()
+def test_missing_ids_are_unjudged()
+def test_refusal_marks_group_unjudged()               # stop_reason="refusal" -> refused, все unjudged, usage учтён
 def test_interrupted_run_does_not_pay_twice(tmp_path):
     # FakeClient падает на 2-й группе из 3 -> исключение; spend == стоимость 1-й группы
-    # повторный judge_theme с рабочим клиентом -> вызовов 2 (группы 2 и 3), album_spend == сумма трёх групп
-def test_request_shape(tmp_path):
-    # client.messages.parse вызван с model, output_format=GroupJudgment, output_config={"effort": effort},
-    # system=SYSTEM_PROMPT, в content для каждой картинки: text "id: pNN" + image base64 image/jpeg
-def test_opus_and_sonnet_use_server_side_fallbacks()   # для claude-opus-5-5 / claude-sonnet-5-5:
-    # client.beta.messages.parse(..., betas=["server-side-fallback-2026-07-01"], fallbacks="default"); для haiku — без них
+    # повторный run_judge с рабочим клиентом -> вызовов 2, album_spend == сумма трёх групп
+def test_rate_limit_waits_and_retries(monkeypatch)    # RateLimitError дважды, затем успех; time.sleep вызван 2 раза по 20
+def test_request_shape()                              # messages.parse(model, max_tokens=16000, system, output_format, output_config={"effort": effort})
+def test_opus_and_sonnet_use_server_side_fallbacks()  # beta.messages.parse(..., betas=["server-side-fallback-2026-07-01"], fallbacks="default"); haiku — без них
 ```
 
-- [ ] **Step 3:** `uv run pytest tests/test_cost.py tests/test_judge.py -v` → FAIL.
-- [ ] **Step 4:** Реализовать:
-  - Клиент — `anthropic.Anthropic(max_retries=4)` из окружения.
-  - Вызов: `messages.parse(model=…, max_tokens=16000, system=SYSTEM_PROMPT, messages=[…], output_format=GroupJudgment, output_config={"effort": effort})`. Параметр `thinking` не передаётся: на этих моделях он адаптивный по умолчанию.
-  - Для моделей из `FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}` — `client.beta.messages.parse` с параметрами из теста.
-  - Проверка: если вход группы ≥ 100 000 токенов, бросать `ValueError`: группа превышает ценовой порог Haiku.
-- [ ] **Step 5:** `uv run pytest tests/test_cost.py tests/test_judge.py -v` → PASS.
-- [ ] **Step 6: Commit** — `feat: Claude judge with structured output, caching and budget guard`.
+- [ ] **Step 3:** `uv run pytest tests/test_cost.py tests/test_stages.py -v` → FAIL.
+- [ ] **Step 4:** Реализовать по Interfaces. Клиент — `anthropic.Anthropic(max_retries=4)` из окружения; параметр `thinking` не передаётся. Если оценка входа группы ≥ 100 000 токенов — `ValueError` (ценовой порог Haiku).
+- [ ] **Step 5:** `uv run pytest tests/test_cost.py tests/test_stages.py -v` → PASS.
+- [ ] **Step 6: Commit** — `feat: two-stage Claude scoring with caching and budget guard`.
 
 ---
 
-### Task 9: Раскладка на ленту и stories
+### Task 8: Интервал, кандидаты и раскладка
 
 **Files:**
 - Create: `src/photo_chooser/select.py`
 - Test: `tests/test_select.py`
 
 **Interfaces:**
-- Consumes: `Asset`, `Judgment`, `LocalFeatures`, `AppConfig`.
+- Consumes: `Asset`, `Judgment`, `Screening`, `LocalFeatures`, `Theme`, `Thresholds`.
 - Produces:
-  - `select.Pools(feed: list[Scored], stories: list[Scored])`, где `Scored(asset: Asset, score: float, reason: str)`. Пулы упорядочены и не обрезаны: обрезку и замену выполняет Task 11.
-  - `select.pools_from_judgments(cands: list[Asset], judgments: dict[str, Judgment], quality: dict[str, float], th: Thresholds, interval_only: bool) -> Pools`:
-    - **feed** — оценённые, у которых `matches_theme` или `interval_only` и `feed_score ≥ min_feed_score`; сортировка по `feed_score` по убыванию, при равенстве — по quality.
-    - **stories** — оценённые подходящие с `stories_score ≥ min_stories_score`; сначала все вертикальные (`stories_score` по убыванию, затем quality), потом остальные в том же порядке.
-    - Один снимок может быть в обоих пулах; исключение пересечений делает Task 11.
-  - `select.pools_local(cands: list[Asset], quality: dict[str, float], feats: dict[str, LocalFeatures]) -> Pools` (FR-10.2):
+  - `select.in_interval(asset, theme, tz: ZoneInfo | None) -> bool`. Местное время `asset.taken_at.astimezone(tz)` без tzinfo сравнивается с наивными `start/end` включительно. Тема без интервала → `True`.
+  - `select.screen_candidates(assets, screenings: dict[str, Screening], quality: dict[str, float], theme: Theme, min_relevance: int, limit: int) -> list[Asset]`:
+    - тема с `query` — снимки, у которых `screenings[uuid].relevance.get(theme.key(), 0) ≥ min_relevance`;
+    - тема только с интервалом — все `assets`, включая снимки без результата первой ступени;
+    - сортировка по ключу (релевантность, `max(feed_score, stories_score)`, quality) по убыванию; отсутствующие значения считаются 0;
+    - первые `limit`.
+  - `select.Scored(asset, score: float, reason: str)`, `select.Pools(feed: list[Scored], stories: list[Scored])`. Пулы упорядочены и не обрезаны: обрезку и замену выполняет Task 10.
+  - `select.pools_from_judgments(cands, judgments, quality, th, interval_only) -> Pools`:
+    - **feed** — оценённые, у которых `matches_theme` или `interval_only` и `feed_score ≥ min_feed_score`; сортировка по `feed_score` по убыванию, при равенстве — по quality;
+    - **stories** — подходящие с `stories_score ≥ min_stories_score`; сначала вертикальные (`stories_score` по убыванию, затем quality), потом остальные;
+    - один снимок может быть в обоих пулах.
+  - `select.pools_local(cands, quality, feats) -> Pools` (FR-10.2):
     - feed — по quality;
     - stories — тот же порядок, вертикальные первыми;
     - reason — `"эстетика 0.72 · резкость 0.81 · лица 0.65"` (отсутствующие компоненты опускаются).
@@ -461,11 +468,16 @@ def test_opus_and_sonnet_use_server_side_fallbacks()   # для claude-opus-5-5 
 - [ ] **Step 1: Тесты.**
 
 ```python
+def test_in_interval_converts_to_trip_timezone():     # taken_at 2026-03-13T20:30Z, Asia/Tokyo, [14.03 05:00, 14.03 12:00] -> True
+def test_in_interval_inclusive_bounds()
+def test_in_interval_without_interval_true()
+def test_screen_candidates_relevance_threshold()      # 4 отсекается, 5 проходит (min_relevance=5)
+def test_screen_candidates_order_and_limit()          # релевантность, затем черновая оценка, затем quality
+def test_screen_candidates_interval_only_includes_unscreened()
 def test_feed_threshold_and_order()
-def test_feed_excludes_not_matching_theme()
 def test_interval_only_ignores_matches_theme()
-def test_stories_verticals_first():                    # горизонтальный с 9 после вертикального с 5
-def test_stories_lower_threshold()                     # stories_score 4 проходит, feed_score 4 — нет
+def test_stories_verticals_first()                    # горизонтальный с 9 после вертикального с 5
+def test_stories_lower_threshold()
 def test_square_counts_as_horizontal()
 def test_unjudged_candidates_excluded()
 def test_local_pools_reason_format()
@@ -474,89 +486,87 @@ def test_local_pools_reason_format()
 - [ ] **Step 2:** `uv run pytest tests/test_select.py -v` → FAIL.
 - [ ] **Step 3:** Реализовать.
 - [ ] **Step 4:** `uv run pytest tests/test_select.py -v` → PASS.
-- [ ] **Step 5: Commit** — `feat: feed and stories pools`.
+- [ ] **Step 5: Commit** — `feat: interval filter, stage-1 candidates and feed/stories pools`.
 
 ---
 
-### Task 10: Выбор кадра Live Photo
+### Task 9: Выбор кадра Live Photo
 
 **Files:**
 - Create: `src/photo_chooser/analysis/live.py`
-- Test: `tests/test_live.py` (короткое `.mov` генерируется в фикстуре через `AVAssetWriter` или берётся из `tests/data/`; ключевой снимок — PNG)
+- Test: `tests/test_live.py` (короткое `.mov` генерируется в фикстуре через `AVAssetWriter`; ключевой снимок — PNG)
 
 **Interfaces:**
 - Consumes: `images.load_cgimage`, `images.gray_array`, `vision.analyze`, `quality.sharpness`.
 - Produces:
   - `live.sample_frames(video: Path, n: int) -> list[CGImage]` — `n` из spike-findings.
-  - `live.frame_scores(images: list[CGImage], long_side: int) -> list[float]`. Все изображения приводятся к общей длинной стороне = min(ключевой, кадр). Score = 0.5·aesthetic + 0.3·sharpness/max(sharpness) + 0.2·face_quality; отсутствующие компоненты нормируются, как в `local_quality`.
-  - `live.choose(key_score: float, frame_scores: list[float], margin: float) -> int | None` — индекс кадра, если `max(frame) ≥ key + margin`, иначе `None`.
-  - Использование (Task 11): `s = frame_scores([key] + frames, long_side)`, затем `choose(s[0], s[1:], margin)`. Ключевой снимок оценивается вместе с кадрами, чтобы нормировка резкости была общей.
+  - `live.frame_scores(images: list[CGImage], long_side: int) -> list[float]`. Все изображения приводятся к общей длинной стороне. Score = 0.5·aesthetic + 0.3·sharpness/max(sharpness) + 0.2·face_quality; отсутствующие компоненты нормируются.
+  - `live.choose(key_score, frame_scores, margin) -> int | None` — индекс кадра, если `max(frame) ≥ key + margin`, иначе `None`.
+  - Использование (Task 10): `s = frame_scores([key] + frames, long_side)`, затем `choose(s[0], s[1:], margin)`.
 
 - [ ] **Step 1: Тесты.**
 
 ```python
-def test_choose_key_when_within_margin():              # key .70, лучший кадр .80, margin .15 -> None
-def test_choose_frame_when_clearly_better():           # key .50, кадры [.40, .70] -> 1
-def test_sample_frames_count(tmp_path)                 # n=5 -> 5 изображений
+def test_choose_key_when_within_margin():             # key .70, лучший кадр .80, margin .15 -> None
+def test_choose_frame_when_clearly_better():          # key .50, кадры [.40, .70] -> 1
+def test_sample_frames_count(tmp_path)                # n=5 -> 5
 def test_frame_scores_sharp_beats_blurred(tmp_path)
 ```
 
 - [ ] **Step 2:** `uv run pytest tests/test_live.py -v` → FAIL.
-- [ ] **Step 3:** Реализовать через `AVAssetImageGenerator` с `appliesPreferredTrackTransform=True` и нулевыми допусками по времени.
+- [ ] **Step 3:** Реализовать через `AVAssetImageGenerator` с `appliesPreferredTrackTransform=True` и нулевыми допусками.
 - [ ] **Step 4:** `uv run pytest tests/test_live.py -v` → PASS.
 - [ ] **Step 5: Commit** — `feat: best frame selection for Live Photos`.
 
 ---
 
-### Task 11: Экспорт и отчёт
+### Task 10: Экспорт и отчёт
 
 **Files:**
 - Create: `src/photo_chooser/export.py`, `src/photo_chooser/report.py`
 - Test: `tests/test_export_report.py`
 
 **Interfaces:**
-- Consumes: `PhotosLibrary`, `Pools`/`Scored` (Task 9), `live.*` (Task 10), `images.write_tiff`, `Theme`.
+- Consumes: `PhotosLibrary`, `Pools`/`Scored` (Task 8), `live.*` (Task 9), `images.load_cgimage`, `images.write_tiff`, `Theme`.
 - Produces:
-  - `export.safe_name(s: str) -> str`:
+  - `export.safe_name(s) -> str`:
     - `/ \ : * ? " < > |` и управляющие символы заменяются на `_`;
     - пробелы по краям обрезаются;
     - результат не длиннее 100 символов;
     - пустая строка → `"_"`.
-  - `export.ensure_outside_library(path: Path) -> None` — если путь или любой родитель (после `resolve()`) оканчивается на `.photoslibrary`, бросает `ConfigError`.
-  - `export.new_run_dir(output_dir: Path, album_title: str, now: datetime) -> Path` — `<output>/<safe album>/<YYYY-MM-DD_HHMM>`; если такая директория есть — суффиксы `_2`, `_3`…
-  - `export.ExportedItem(list_name: str, rank: int, asset: Asset, files: list[str], score: float, reason: str, notes: list[str])`. Заметки:
-    - `"пара RAW"`;
+  - `export.ensure_outside_library(path) -> None` — путь внутри `*.photoslibrary` → `ConfigError`.
+  - `export.new_run_dir(output_dir, album_title, now) -> Path` — `<output>/<safe album>/<YYYY-MM-DD_HHMM>`, при совпадении суффиксы `_2`, `_3`…
+  - `export.ExportedItem(list_name, rank, asset, files: list[str], score, reason, notes: list[str])`. Заметки:
     - `"кадр из Live Photo, разрешение ниже оригинала"`;
-    - `"видео Live Photo не скачалось — взят ключевой снимок"`;
-    - `"нет часового пояса"`.
-  - `export.assemble(pools: Pools, n_feed: int, n_stories: int, try_export: Callable[[Scored, str, int], ExportedItem | None]) -> Assembled(feed: list[ExportedItem], stories: list[ExportedItem], failed: list[tuple[Asset, str]], shortfall_feed: int, shortfall_stories: int)`. Алгоритм:
+    - `"видео Live Photo не скачалось — взят ключевой снимок"`.
+  - `export.assemble(pools, n_feed, n_stories, try_export: Callable[[Scored, str, int], ExportedItem | None]) -> Assembled(feed, stories, failed: list[tuple[Asset, str]], shortfall_feed, shortfall_stories)`. Алгоритм:
     - идти по `pools.feed`, пока не экспортировано `n_feed`;
-    - затем идти по `pools.stories`, пропуская уже экспортированные и упавшие, пока не экспортировано `n_stories`;
-    - ранг — порядковый номер успешного экспорта в своём списке.
+    - затем идти по `pools.stories`, пропуская экспортированные и упавшие;
+    - ранг — порядковый номер успешного экспорта в списке.
   - `export.export_asset(library, scored, list_name, rank, theme_dir, tmp, cfg) -> ExportedItem | None`:
-    - имена файлов `f"{rank:02d}_{original_name}"`;
-    - Live Photo: видео → `live.choose` → оригинал или `…_live-frame.tiff`;
+    - имена `f"{rank:02d}_{original_name}"`;
+    - Live Photo: видео → кадры → `live.choose` → оригинал или `…_live-frame.tiff`;
     - `DownloadError` видео → оригинал ключевого снимка и заметка;
     - `DownloadError` оригинала → `None`.
-  - `report.write_report(path: Path, theme: Theme, header: ReportHeader, assembled: Assembled, stats: ThemeStats) -> None`:
-    - `ReportHeader(model: str | None, effort: str | None, prompt_version: str | None, run_at: datetime)`; `model=None` → «без облака»;
-    - `ThemeStats(read, junk, duplicates_collapsed, no_preview, in_theme, sent_to_cloud, from_cache, unjudged, usd_run, usd_album_total)`;
+  - `report.write_report(path, theme, header: ReportHeader, assembled, stats: ThemeStats) -> None`:
+    - `ReportHeader(screen_model: str | None, model: str | None, effort: str | None, prompt_versions: str | None, run_at: datetime, warnings: list[str])`; модели `None` → «без облака»;
+    - `ThemeStats(read, no_preview, junk, duplicates_collapsed, in_interval, sent_to_screen, matched, sent_to_judge, from_cache, unjudged, usd_screen, usd_judge, usd_album_total)`;
     - таблица: «Ранг | Файл(ы) | Список | Оценка | Ориентация | Пометки | Причина»;
-    - блок сводки, недобор, пропущенные снимки с причиной.
+    - сводка, недобор, пропущенные снимки с причиной.
 
 - [ ] **Step 1: Тесты.**
 
 ```python
-def test_safe_name_cases():                            # "Гиза/Каир: день 1 " -> "Гиза_Каир_ день 1"; "" -> "_"
-def test_ensure_outside_library(tmp_path)              # .../Photos Library.photoslibrary/x -> ConfigError
-def test_new_run_dir_never_overwrites(tmp_path)        # существующий 2026-11-01_1530 -> 2026-11-01_1530_2
-def test_assemble_disjoint_and_ranked()                # снимок в обоих пулах попадает только в feed; ранги 1..n без дыр
-def test_assemble_replaces_failed_export()             # 2-й в feed падает -> его место занимает следующий, failed содержит его
-def test_assemble_shortfall()                          # пулы меньше лимитов -> shortfall_feed/stories > 0
-def test_export_raw_pair_both_files(tmp_path)          # FakeLibrary отдаёт DNG+JPG -> "01_IMG_1.DNG", "01_IMG_1.JPG"
+def test_safe_name_cases():                           # "Гиза/Каир: день 1 " -> "Гиза_Каир_ день 1"; "" -> "_"
+def test_ensure_outside_library(tmp_path)
+def test_new_run_dir_never_overwrites(tmp_path)
+def test_assemble_disjoint_and_ranked()
+def test_assemble_replaces_failed_export()
+def test_assemble_shortfall()
+def test_export_original_ranked_name(tmp_path)       # "01_IMG_1.HEIC"
 def test_export_live_video_failure_falls_back_to_key(tmp_path)
-def test_export_live_frame_writes_tiff(tmp_path)       # choose -> индекс -> "…_live-frame.tiff" + заметка
-def test_report_contains_header_table_and_summary(tmp_path)   # «без облака», строки таблицы, «Недобор: лента 3»
+def test_export_live_frame_writes_tiff(tmp_path)
+def test_report_contains_header_table_and_summary(tmp_path)   # «без облака», предупреждения, «Недобор: лента 3», стоимость по ступеням
 ```
 
 - [ ] **Step 2:** `uv run pytest tests/test_export_report.py -v` → FAIL.
@@ -566,7 +576,7 @@ def test_report_contains_header_table_and_summary(tmp_path)   # «без обл�
 
 ---
 
-### Task 12: Конвейер и CLI
+### Task 11: Конвейер и CLI
 
 **Files:**
 - Create: `src/photo_chooser/pipeline.py`, `src/photo_chooser/cli.py`
@@ -574,47 +584,59 @@ def test_report_contains_header_table_and_summary(tmp_path)   # «без обл�
 - Test: `tests/test_pipeline.py`, `tests/test_cli.py`
 
 **Interfaces:**
-- Consumes: всё из Task 2–11.
+- Consumes: всё из Task 2–10.
 - Produces:
   - `pipeline.RunOptions(dry_run: bool, no_cloud: bool, model: str | None, max_cost: float | None)`.
-  - `pipeline.prepare_album(library, cache, album: AlbumRef, cfg) -> AlbumState(assets, features: dict[str, LocalFeatures], quality: dict[str, float], junk: dict[str, str], no_preview: list[str], duplicates_collapsed: int, pool: list[Asset])`. Снимки с `preview_path=None` идут в `no_preview` и дальше не анализируются.
-  - `pipeline.run(trip: TripConfig, cfg, opts, library, cache, encoder_factory: Callable[[], TextImageEncoder], judge_factory: Callable[[str, str], ClaudeJudge], now: datetime) -> RunResult(run_dir: Path | None, themes: list[ThemeOutcome], estimate_usd: float)`:
-    - `judge_factory(model, effort)` создаёт `ClaudeJudge` с превью `images.jpeg_bytes(a.preview_path, cfg.cloud.preview_long_side_px)`;
-    - `ThemeOutcome(theme: Theme, report_path: Path | None, assembled: Assembled | None, error: str | None)`.
+  - `pipeline.prepare_album(library, cache, album, cfg) -> AlbumState(assets, previews: dict[str, Path], features, quality, junk: dict[str, str], no_preview: list[str], duplicates_collapsed: int, pool: list[Asset])`. `library.preview() is None` → снимок в `no_preview`, дальше не анализируется.
+  - `pipeline.run(trip, cfg, opts, library, cache, screen_factory: Callable[[str, str], ScreenRunner], judge_factory: Callable[[str, str], JudgeRunner], now) -> RunResult(run_dir: Path | None, themes: list[ThemeOutcome], estimate_usd: float)`:
+    - фабрики `(model, effort)` создают раннеры с превью `images.jpeg_bytes(previews[a.uuid], cfg.cloud.preview_long_side_px)`;
+    - `ThemeOutcome(theme, report_path: Path | None, assembled: Assembled | None, error: str | None)`.
 
     Порядок:
     1. `ensure_outside_library(cfg.output_dir)`.
     2. `find_album`, `prepare_album`.
-    3. Кандидаты по всем темам. Encoder создаётся, только если в какой-то теме есть `query`.
-    4. Если не `no_cloud`: проверка цены модели, общая оценка некэшированных кандидатов, `check_budget(cache.album_spend(...), estimate, opts.max_cost or cfg.cloud.max_cost_usd_per_album)` — **до** первого вызова.
+    3. Для каждой темы — снимки `pool`, прошедшие `in_interval` с `trip.tz`.
+    4. Если не `no_cloud`:
+       - проверка цен обеих моделей;
+       - `estimate_run_usd`: `n_screen` — некэшированные снимки `pool` для набора `trip.query_themes` (0, если тем с `query` нет); `n_judge[i] = min(снимков темы i после интервала, candidates_per_theme)`;
+       - `check_budget(cache.album_spend, estimate, opts.max_cost or limit)` — **до** первого вызова.
     5. `dry_run` → вернуть оценку без вызовов и экспорта.
-    6. По каждой теме: оценка (или `pools_local`) → `assemble` с `export_asset` → `write_report`. Исключение API внутри темы → тема помечается упавшей, остальные продолжаются.
+    6. Облачный режим: если `trip.query_themes` не пуст — **один** `run_screen` по всему `pool` со всеми `query_themes`. Ошибка API здесь останавливает запуск: без первой ступени темы с `query` не обработать.
+    7. По каждой теме:
+       - облачный режим: `screen_candidates` → если кандидатов нет, вторая ступень не вызывается → `run_judge` → `pools_from_judgments`;
+       - `no_cloud`: `query` игнорируется (предупреждение в шапке отчёта) → `pools_local`.
+    8. Затем `assemble` + `export_asset` → `write_report`. Исключение API во второй ступени темы → тема помечается упавшей, остальные продолжаются.
   - `cli.app` (typer):
-    - `albums` — строки `«<title> — <count> фото [<folder>]»`;
-    - `run [TRIP] --album --theme --query --from --to --dry-run --no-cloud --model --max-cost`. Нужен либо `TRIP`, либо `--album` + `--theme`; `--from`/`--to` в формате `YYYY-MM-DD HH:MM`.
-  - Коды выхода: 0 — успех, 2 — `ConfigError`/`UnknownModelPrice`, 3 — `BudgetExceeded`, 4 — `AlbumNotFound`/`AlbumAmbiguous`, 5 — `PhotosAccessError`, 1 — прочее. Сообщения на русском, для `AlbumNotFound` выводятся похожие имена.
+    - `albums` — строки `«<title> — <count> фото»`;
+    - `run [TRIP] --album --theme --query --from --to --timezone --dry-run --no-cloud --model --max-cost`. Нужен либо `TRIP`, либо `--album` + `--theme`; `--from/--to` в формате `YYYY-MM-DD HH:MM`, вместе с ними обязателен `--timezone`.
+  - Коды выхода: 0 — успех, 2 — `ConfigError`/`UnknownModelPrice`, 3 — `BudgetExceeded`, 4 — `AlbumNotFound`/`AlbumAmbiguous`, 5 — `PhotosAccessError`, 1 — прочее. Сообщения на русском.
 
-- [ ] **Step 1: Тесты `tests/test_pipeline.py`** (`FakeLibrary`, `FakeEncoder`, `FakeClient`, `tmp_path`).
+- [ ] **Step 1: Тесты `tests/test_pipeline.py`** (`FakeLibrary`, `FakeClient`, `tmp_path`).
 
 ```python
-def test_no_cloud_end_to_end(tmp_path)                 # скриншот и дубль не в выдаче; feed/ и stories/ созданы; report.md есть; FakeClient не вызван
+def test_no_cloud_end_to_end(tmp_path)                # скриншот и дубль не в выдаче; feed/ и stories/; report.md; FakeClient не вызван
+def test_no_cloud_ignores_query_with_warning(tmp_path)
 def test_assets_without_preview_skipped_and_counted(tmp_path)
-def test_zero_candidates_no_api_call(tmp_path)         # query ничего не нашёл -> 0 вызовов, report с недобором 20/40
-def test_budget_checked_before_any_call(tmp_path)      # album_spend 4.9 + оценка > 5 -> BudgetExceeded, 0 вызовов, run_dir не создан
+def test_screen_runs_once_for_all_themes(tmp_path)    # 3 темы с query, pool 45 -> 3 запроса первой ступени (группы по 20), не 9
+def test_no_matches_in_screen_skips_judge(tmp_path)   # первая ступень: ни одного совпадения с темой -> 0 запросов второй ступени, недобор 20/40
+def test_interval_only_trip_skips_screen(tmp_path)    # нет тем с query -> 0 запросов первой ступени
+def test_empty_interval_no_calls(tmp_path)
+def test_budget_checked_before_any_call(tmp_path)     # album_spend 4.9 + оценка > 5 -> BudgetExceeded, 0 вызовов, run_dir не создан
 def test_max_cost_overrides_limit(tmp_path)
-def test_dry_run_no_calls_no_files(tmp_path)           # estimate_usd > 0, run_dir None
+def test_dry_run_no_calls_no_files(tmp_path)
 def test_unknown_model_price_stops_before_call(tmp_path)
 def test_theme_failure_does_not_stop_other_themes(tmp_path)
-def test_model_override_keys_cache_separately(tmp_path)  # haiku, затем --model opus -> второй прогон вызывает API заново
+def test_model_override_keys_cache_separately(tmp_path)   # haiku, затем --model opus -> вторая ступень вызывается заново, первая — из кэша
 ```
 
 - [ ] **Step 2: Тесты `tests/test_cli.py`** (`typer.testing.CliRunner`, фабрики подменяются monkeypatch).
 
 ```python
-def test_run_requires_trip_or_album_and_theme()        # exit 2
+def test_run_requires_trip_or_album_and_theme()       # exit 2
+def test_interval_without_timezone_exit_2()
 def test_album_not_found_exit_4_lists_similar()
 def test_budget_exceeded_exit_3()
-def test_run_with_args_builds_single_theme()
+def test_photos_access_error_exit_5_mentions_settings()   # «System Settings → Privacy & Security → Photos»
 ```
 
 - [ ] **Step 3:** `uv run pytest tests/test_pipeline.py tests/test_cli.py -v` → FAIL.
@@ -624,46 +646,43 @@ def test_run_with_args_builds_single_theme()
 
 ---
 
-### Task 13: Интеграционные тесты на реальной Photos
+### Task 12: Интеграционные тесты на реальной Photos
 
 **Files:**
-- Create: `tests/integration/test_album.py`, `tests/integration/README.md` (как собрать тестовый альбом)
+- Create: `tests/integration/test_album.py`, `tests/integration/README.md`
 - Modify: `pyproject.toml` — маркеры `integration`, `cloud`; по умолчанию `-m "not integration"`
 
 **Interfaces:**
-- Consumes: CLI и `OsxPhotosLibrary`. Тестовый альбом (~30 фото) пользователь собирает вручную по README. Его содержимое:
-  - серия из 5 дублей;
-  - скриншот;
-  - смазанный кадр;
-  - Live Photo;
-  - пара RAW+JPEG;
-  - кадры двух тем: например, «кофе» и «улица».
-
-  Имя альбома передаётся через `PHOTO_CHOOSER_IT_ALBUM`.
+- Consumes: CLI и `PhotoKitLibrary`.
+- `tests/integration/README.md` описывает, как подготовить запуск:
+  - **тестовый альбом** (~30 фото, собирается вручную): серия из 5 дублей, скриншот, смазанный кадр, Live Photo, кадры двух тем (например, «кофе» и «улица»);
+  - **проверку NFR-5**: у Terminal в System Settings → Privacy & Security включён только Photos, а в Full Disk Access он выключен.
+- Тесты запускает пользователь в Terminal, имя альбома передаётся через `PHOTO_CHOOSER_IT_ALBUM`.
 
 - [ ] **Step 1: Тесты.**
 
 ```python
 @pytest.mark.integration
-def test_library_unchanged_after_run(tmp_path):        # NFR-1: множество uuid, count и date_modified (osxphotos) до == после
+def test_library_unchanged_after_run(tmp_path):        # NFR-1: множество localIdentifier, count и modificationDate до == после
 @pytest.mark.integration
-def test_no_cloud_run_on_test_album(tmp_path):         # нет скриншота; из серии максимум 1; RAW-пара — 2 файла; Live — 1 файл
+def test_no_cloud_run_on_test_album(tmp_path):         # нет скриншота; из серии максимум 1; Live — 1 файл
 @pytest.mark.integration
 @pytest.mark.cloud
-def test_haiku_run_on_test_album(tmp_path):            # одна тема, report.md с моделью claude-haiku-5-5 и стоимостью > 0
+def test_haiku_run_on_test_album(tmp_path):            # одна тема, report.md с моделями и стоимостью > 0
 ```
 
-- [ ] **Step 2:** `PHOTO_CHOOSER_IT_ALBUM="photo-chooser-test" uv run pytest -m integration -v` → PASS. Тест `cloud` запускается только при наличии ключа.
+- [ ] **Step 2:** Пользователь в Terminal: `PHOTO_CHOOSER_IT_ALBUM="photo-chooser-test" uv run pytest -m integration -v` → PASS. Тест `cloud` — только при наличии ключа.
 - [ ] **Step 3: Commit** — `test: integration tests on a real Photos album`.
 
 ---
 
-### Task 14: Приёмка на прошлой поездке и выбор прод-модели (вместе с пользователем, без кода)
+### Task 13: Приёмка на прошлой поездке и выбор прод-модели (вместе с пользователем, без кода)
 
-- [ ] **Step 1:** Альбом прошлой поездки, `trip.yaml` с 2–3 темами разного типа (SPEC §12). Последовательно выполнить: `--no-cloud`, `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`. Лимит поднимается через `--max-cost` с согласия пользователя.
+- [ ] **Step 1:** Альбом прошлой поездки, `trip.yaml` с 2–3 темами разного типа (SPEC §12). Последовательно выполнить: `--no-cloud`; затем с первой ступенью на Haiku — вторая на `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`. Лимит поднимается через `--max-cost` с согласия пользователя.
 - [ ] **Step 2:** Записать в `docs/acceptance.md` по каждому прогону:
-  - время первого прогона и повторного прогона той же темы (NFR-4);
-  - стоимость (NFR-2);
-  - оценку пользователя: сколько кадров из 20 ленты и 40 stories пригодны (NFR-3).
-- [ ] **Step 3:** Пользователь выбирает модель. Зафиксировать `cloud.model` и `cloud.effort` в `~/.config/photo-chooser/config.yaml` и результат в `docs/acceptance.md`.
+  - время первого прогона и повтора той же темы (NFR-4);
+  - стоимость по ступеням (NFR-2);
+  - оценку пользователя: пригодные кадры из 20 ленты и 40 stories (NFR-3);
+  - замечания о пропусках первой ступени.
+- [ ] **Step 3:** Пользователь выбирает модель второй ступени. Зафиксировать `cloud.model` и `cloud.effort` в `~/.config/photo-chooser/config.yaml` и результат в `docs/acceptance.md`.
 - [ ] **Step 4: Commit** — `docs: acceptance results and production model choice`.
