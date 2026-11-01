@@ -134,11 +134,6 @@ DEFAULT_PRICING = {
 }
 
 
-class ShortlistCfg(_Strict):
-    feed: int = Field(default=20, ge=0)
-    stories: int = Field(default=40, ge=0)
-
-
 class PostsCfg(_Strict):
     """Посты на тему (SPEC FR-4): лимиты каруселей ленты и stories."""
 
@@ -202,7 +197,6 @@ class StyleCfg(_Strict):
 
 class AppConfig(_Strict):
     output_dir: Path = Field(default=Path("~/Pictures/photo-chooser"), validate_default=True)
-    shortlist: ShortlistCfg = Field(default_factory=ShortlistCfg)
     posts: PostsCfg = Field(default_factory=PostsCfg)
     cloud: CloudCfg = Field(default_factory=CloudCfg)
     thresholds: Thresholds = Field(default_factory=Thresholds)
@@ -212,6 +206,14 @@ class AppConfig(_Strict):
     @classmethod
     def _expand(cls, v: Path) -> Path:
         return v.expanduser()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed_keys(cls, data):
+        if isinstance(data, dict) and "shortlist" in data:
+            raise ConfigError("shortlist.feed/stories заменены на posts.carousels, posts.carousel_size и posts.stories "
+                              "(версия 0.3): лента — до 2 каруселей по 9 кадров, stories — до 9")
+        return data
 
 
 def _describe(e: ValidationError) -> str:

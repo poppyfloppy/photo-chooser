@@ -15,22 +15,34 @@ from photo_chooser.analysis.junk import junk_reason
 from photo_chooser.analysis.quality import compute_features, local_quality, percentile_ranks
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme, TripConfig, themes_key
-from photo_chooser.export import Assembled, assemble, ensure_outside_library, export_asset, new_run_dir, safe_name
+from photo_chooser.export import ExportedPosts, ensure_outside_library, export_posts, new_run_dir, safe_name
 from photo_chooser.judge.cost import check_budget, estimate_run_usd, price_for
-from photo_chooser.judge.prompts import SCREEN_PROMPT_VERSION
+from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import (
+    ComposeRunner,
     JudgeRunner,
     ScreenRunner,
     StageOutcome,
     check_credentials,
+    compose_input_fingerprint,
     judge_prompt_version,
+    run_compose,
     run_judge,
     run_screen,
 )
 from photo_chooser.library.base import PhotosLibrary
 from photo_chooser.models import AlbumRef, Asset, LocalFeatures, Screening
 from photo_chooser.report import ReportHeader, ThemeStats, write_report
-from photo_chooser.select import Pools, in_interval, pools_from_judgments, pools_local, screen_candidates
+from photo_chooser.select import (
+    Posts,
+    compose_candidates,
+    fallback_posts,
+    in_interval,
+    local_facts,
+    local_posts,
+    screen_candidates,
+    shot_facts,
+)
 from photo_chooser.style import StyleContext, load_style
 
 PROGRESS_EVERY = 50
@@ -64,7 +76,7 @@ class AlbumState:
 class ThemeOutcome:
     theme: Theme
     report_path: Path | None
-    assembled: Assembled | None
+    posts: ExportedPosts | None
     error: str | None
 
 
@@ -137,18 +149,28 @@ def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets:
             n_screen += 1
         else:
             screenings[a.uuid] = s
-    n_judge = []
+    n_judge, n_compose = [], []
+    limit = cfg.cloud.compose_candidates
     for t in trip.themes:
         assets = theme_assets[t.key()]
         if n_screen and not t.interval_only:
             n_judge.append(min(len(assets), cfg.cloud.candidates_per_theme))  # кандидаты ещё неизвестны
+            n_compose.append(min(len(assets), limit))
             continue
         cands = screen_candidates(assets, screenings, state.quality, t, cfg.thresholds.min_theme_relevance,
                                   cfg.cloud.candidates_per_theme)
-        n_judge.append(sum(cache.get_judgment(a.uuid, t.key(), judge_model, judge_prompt_version(style)) is None
-                           for a in cands))
+        judged = {a.uuid: j for a in cands
+                  if (j := cache.get_judgment(a.uuid, t.key(), judge_model, judge_prompt_version(style))) is not None}
+        n_judge.append(len(cands) - len(judged))
+        if len(judged) < len(cands):  # оценки ещё неизвестны — вход сборки тоже
+            n_compose.append(min(len(cands), limit))
+            continue
+        comp = compose_candidates(cands, judged, state.quality, cfg.thresholds, t.interval_only, limit)
+        fingerprint = compose_input_fingerprint(comp, shot_facts(judged), cfg.posts, style)
+        cached = comp and cache.get_composition(t.key(), judge_model, COMPOSE_PROMPT_VERSION, fingerprint) is not None
+        n_compose.append(0 if cached else len(comp))
     return estimate_run_usd(n_screen, n_judge, cfg.cloud, screen_model, judge_model,
-                            judge_extra_tokens=style.extra_tokens if style else 0)
+                            judge_extra_tokens=style.extra_tokens if style else 0, n_compose=n_compose)
 
 
 def _theme_dir(run_dir: Path, theme: Theme) -> Path:
@@ -211,8 +233,10 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
         screenings = screen.results
 
     run_dir = new_run_dir(cfg.output_dir, album.title, now)
-    judge_runner = None
+    judge_runner = compose_runner = None
     outcomes: list[ThemeOutcome] = []
+    no_preview = set(state.no_preview)
+    skipped = [(a.filename, "нет превью") for a in state.assets if a.uuid in no_preview]
     with tempfile.TemporaryDirectory(prefix="photo-chooser-") as tmp:
         for t in trip.themes:
             log(f"Тема «{t.name}»")
@@ -226,23 +250,36 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             matched = None if opts.no_cloud or t.interval_only else sum(
                 1 for a in assets if a.uuid in screenings and screenings[a.uuid].relevance.get(t.screen_key(), 0)
                 >= th.min_theme_relevance)
+            facts: dict = {}
+            posts = Posts([], [])
+            compose_usd, sent_to_compose = 0.0, 0
             if opts.no_cloud:
                 if t.query:
                     warnings.append(NO_CLOUD_QUERY_WARNING.format(scope="интервала" if t.has_interval else "альбома"))
                 cands = assets
-                pools = pools_local(cands, state.quality, state.features)
+                posts = local_posts(cands, state.quality, state.features, cfg.posts)
+                facts = local_facts(cands, state.quality, state.features)
             else:
                 cands = screen_candidates(assets, screenings, state.quality, t, th.min_theme_relevance,
                                           cfg.cloud.candidates_per_theme)
-                pools = Pools(feed=[], stories=[])
                 if cands:
                     try:
                         if judge_runner is None:
                             judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview, style=style)
+                            compose_runner = ComposeRunner(client, judge_model, cfg.cloud.effort, preview, style=style)
                         order = {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0) / 10
                                  for a in cands}
                         judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid)
-                        pools = pools_from_judgments(cands, judge.results, state.quality, th, t.interval_only)
+                        facts = shot_facts(judge.results)
+                        comp = compose_candidates(cands, judge.results, state.quality, th, t.interval_only,
+                                                  cfg.cloud.compose_candidates)
+                        sent_to_compose = len(comp)
+                        if comp:
+                            posts, compose_usd, failure = _compose(compose_runner, cache, t, comp, facts, cfg,
+                                                                   album.uuid)
+                            if posts is None:
+                                warnings.append(f"Сборка не удалась — разложено по оценкам ({failure})")
+                                posts = fallback_posts(cands, judge.results, state.quality, th, cfg.posts)
                     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
                         raise  # ключ не подходит — другие темы упадут так же
                     except anthropic.APIError as e:
@@ -252,14 +289,13 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             if judge and judge.refused_groups:
                 warnings.append(f"Модель отказалась оценивать групп: {judge.refused_groups} — эти кадры не оценены")
 
-            assembled = assemble(pools, cfg.shortlist.feed, cfg.shortlist.stories,
-                                 lambda s, ln, r: export_asset(library, s, ln, r, theme_dir, Path(tmp), cfg))
+            exported = export_posts(library, posts, theme_dir, Path(tmp), cfg)
             header = ReportHeader(
                 screen_model=None if opts.no_cloud or screen is None else screen_model,
                 model=None if opts.no_cloud else judge_model,
                 effort=None if opts.no_cloud else cfg.cloud.effort,
-                prompt_versions=(None if opts.no_cloud
-                                 else f"{SCREEN_PROMPT_VERSION}, {judge_prompt_version(style)}"),
+                prompt_versions=(None if opts.no_cloud else
+                                 f"{SCREEN_PROMPT_VERSION}, {judge_prompt_version(style)}, {COMPOSE_PROMPT_VERSION}"),
                 run_at=now, warnings=warnings, album=album.title,
                 style=None if style is None else _style_line(style))
             stats = ThemeStats(
@@ -269,13 +305,26 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 sent_to_judge=len(cands) if not opts.no_cloud else 0,
                 from_cache=judge.from_cache if judge else 0, unjudged=len(judge.unjudged) if judge else 0,
                 usd_screen=screen.usd if screen else 0.0, usd_judge=judge.usd if judge else 0.0,
-                usd_album_total=cache.album_spend(album.uuid),
-                skipped=[(a.filename, "нет превью") for a in state.assets if a.uuid in set(state.no_preview)])
+                usd_album_total=cache.album_spend(album.uuid), skipped=skipped,
+                sent_to_compose=sent_to_compose, usd_compose=compose_usd)
             report_path = theme_dir / "report.md"
-            write_report(report_path, t, header, assembled, stats)
-            outcomes.append(ThemeOutcome(t, report_path, assembled, error))
+            write_report(report_path, t, header, exported, facts, stats)
+            outcomes.append(ThemeOutcome(t, report_path, exported, error))
     return RunResult(run_dir=run_dir, themes=outcomes, estimate_usd=estimate, theme_counts=counts,
                      album_spend_usd=cache.album_spend(album.uuid))
+
+
+def _compose(runner: ComposeRunner, cache: Cache, theme: Theme, comp: list[Asset], facts: dict, cfg: AppConfig,
+             album_uuid: str) -> tuple[Posts | None, float, str]:
+    """Сборка постов темы; None — не удалась (FR-4.4): отказ, неразборчивый ответ или ошибка API после повторов."""
+    try:
+        outcome = run_compose(runner, cache, theme, comp, facts, cfg, album_uuid)
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
+        raise
+    except anthropic.APIError as e:
+        return None, 0.0, f"{type(e).__name__}: {e}"
+    failure = "" if outcome.posts is not None else ("модель отказалась" if outcome.refused else "неразборчивый ответ")
+    return outcome.posts, outcome.usd, failure
 
 
 def _style_line(style: StyleContext) -> str:

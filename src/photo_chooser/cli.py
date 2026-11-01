@@ -173,8 +173,10 @@ def _print_result(result: pipeline.RunResult, opts: pipeline.RunOptions, limit: 
             failed = True
             typer.echo(f"  «{o.theme.name}»: тема не обработана — {o.error}")
         else:
-            a = o.assembled
-            typer.echo(f"  «{o.theme.name}»: лента {len(a.feed)}, stories {len(a.stories)} — {o.report_path}")
+            p = o.posts
+            sizes = " + ".join(str(len(c.slides)) for c in p.carousels)
+            typer.echo(f"  «{o.theme.name}»: каруселей {len(p.carousels)}" + (f" ({sizes})" if sizes else "")
+                       + f", stories {len(p.stories)} — {o.report_path}")
     if not opts.no_cloud:
         typer.echo(f"Накоплено по альбому: ${result.album_spend_usd:.2f}")
     return failed

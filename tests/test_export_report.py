@@ -6,18 +6,11 @@ from conftest import make_asset
 from fakes import FakeLibrary
 from imaging import blurred, save_jpeg, scene_image, write_mov
 from photo_chooser.config import AppConfig, ConfigError, Theme
-from photo_chooser.export import (
-    ExportedItem,
-    assemble,
-    ensure_outside_library,
-    export_asset,
-    new_run_dir,
-    safe_name,
-)
+from photo_chooser.export import ensure_outside_library, export_posts, export_shot, new_run_dir, safe_name
 from photo_chooser.library.base import DownloadError
 from photo_chooser.models import AlbumRef
 from photo_chooser.report import ReportHeader, ThemeStats, write_report
-from photo_chooser.select import Pools, Scored
+from photo_chooser.select import Carousel, Posts, ShotFacts, Slide, StoryPick
 
 NOW = datetime(2026, 11, 1, 15, 30)
 
@@ -51,54 +44,6 @@ def test_new_run_dir_never_overwrites(tmp_path):
     assert first.is_dir() and second.is_dir() and third.is_dir()
 
 
-def _sc(a, score=7.0):
-    return Scored(a, score, "r")
-
-
-def _fake_export(failing=()):
-    calls = []
-
-    def try_export(scored, list_name, rank):
-        calls.append((scored.asset.uuid, list_name, rank))
-        if scored.asset.uuid in failing:
-            raise DownloadError(scored.asset.uuid, "3 попытки не удались: network")
-        return ExportedItem(list_name, rank, scored.asset, [f"{rank:02d}_{scored.asset.filename}"], scored.score,
-                            scored.reason, [], scored.crop)
-
-    return try_export, calls
-
-
-def test_assemble_disjoint_and_ranked():
-    a, b, c, d, e = (make_asset() for _ in range(5))
-    pools = Pools(feed=[_sc(a), _sc(b), _sc(c)], stories=[_sc(b), _sc(d), _sc(a), _sc(e)])
-    try_export, _ = _fake_export()
-    got = assemble(pools, 2, 2, try_export)
-    assert [(i.asset, i.rank, i.list_name) for i in got.feed] == [(a, 1, "feed"), (b, 2, "feed")]
-    assert [(i.asset, i.rank, i.list_name) for i in got.stories] == [(d, 1, "stories"), (e, 2, "stories")]
-    assert got.shortfall_feed == 0 and got.shortfall_stories == 0 and got.failed == []
-
-
-def test_assemble_replaces_failed_export():
-    a, b, c, d = (make_asset() for _ in range(4))
-    pools = Pools(feed=[_sc(a), _sc(b), _sc(c)], stories=[_sc(b), _sc(d)])
-    try_export, calls = _fake_export(failing={b.uuid})
-    got = assemble(pools, 2, 5, try_export)
-    assert [(i.asset, i.rank) for i in got.feed] == [(a, 1), (c, 2)]
-    assert [i.asset for i in got.stories] == [d]
-    assert [(x.uuid, "network" in reason) for x, reason in got.failed] == [(b.uuid, True)]
-    assert [uuid for uuid, *_ in calls].count(b.uuid) == 1  # упавший снимок не повторяется в stories
-
-
-def test_assemble_shortfall():
-    a, b = make_asset(), make_asset()
-    try_export, _ = _fake_export()
-    got = assemble(Pools(feed=[_sc(a), _sc(b)], stories=[_sc(a)]), 5, 3, try_export)
-    assert got.shortfall_feed == 3
-    assert got.shortfall_stories == 3
-    empty = assemble(Pools(feed=[], stories=[]), 20, 40, try_export)
-    assert (empty.shortfall_feed, empty.shortfall_stories) == (20, 40)
-
-
 def _library(assets, files, live=None):
     return FakeLibrary([AlbumRef("al", "Egypt", len(assets))], {"al": assets}, {}, files=files, live=live or {})
 
@@ -107,26 +52,25 @@ def test_export_original_ranked_name(tmp_path):
     a = make_asset(filename="IMG_1.HEIC")
     src = tmp_path / "src.heic"
     src.write_bytes(b"original-bytes")
-    item = export_asset(_library([a], {a.uuid: src}), _sc(a, 8), "feed", 1, tmp_path / "theme", tmp_path / "tmp",
-                        AppConfig())
-    assert item.files == ["01_IMG_1.HEIC"]
-    assert (tmp_path / "theme" / "feed" / "01_IMG_1.HEIC").read_bytes() == b"original-bytes"
-    assert item.notes == [] and item.rank == 1 and item.score == 8
+    shot = export_shot(_library([a], {a.uuid: src}), a, tmp_path / "dest", "01", tmp_path / "tmp", AppConfig())
+    assert shot.files == ["01_IMG_1.HEIC"]
+    assert (tmp_path / "dest" / "01_IMG_1.HEIC").read_bytes() == b"original-bytes"
+    assert shot.notes == []
 
 
 def test_export_original_failure_raises(tmp_path):
     a = make_asset()
     with pytest.raises(DownloadError):
-        export_asset(_library([a], {}), _sc(a), "feed", 1, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+        export_shot(_library([a], {}), a, tmp_path / "dest", "01", tmp_path / "tmp", AppConfig())
 
 
 def test_export_live_video_failure_falls_back_to_key(tmp_path):
     a = make_asset(filename="IMG_2.JPG", is_live=True)
     key = save_jpeg(scene_image(0), tmp_path / "key.jpg")
     lib = _library([a], {a.uuid: key})
-    item = export_asset(lib, _sc(a), "stories", 3, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    item = export_shot(lib, a, tmp_path / "stories", "03", tmp_path / "tmp", AppConfig())
     assert item.files == ["03_IMG_2.JPG"]
-    assert (tmp_path / "theme" / "stories" / "03_IMG_2.JPG").exists()
+    assert (tmp_path / "stories" / "03_IMG_2.JPG").exists()
     assert item.notes == ["видео Live Photo не скачалось — взят ключевой снимок"]
     assert lib.live_requests == [a.uuid]
 
@@ -136,10 +80,10 @@ def test_export_live_frame_writes_tiff(tmp_path):
     key = save_jpeg(blurred(scene_image(1), 12), tmp_path / "key.jpg", date="2026:03:14 07:31:05",
                     gps=(29.9792, 31.1342))
     video = write_mov(tmp_path / "IMG_4610.MOV", [scene_image(1, size=(480, 360)) for _ in range(10)])
-    item = export_asset(_library([a], {a.uuid: key}, {a.uuid: video}), _sc(a), "stories", 1, tmp_path / "theme",
-                        tmp_path / "tmp", AppConfig())
+    item = export_shot(_library([a], {a.uuid: key}, {a.uuid: video}), a, tmp_path / "stories", "01",
+                       tmp_path / "tmp", AppConfig())
     assert item.files == ["01_IMG_4610_live-frame.tiff"]
-    assert (tmp_path / "theme" / "stories" / "01_IMG_4610_live-frame.tiff").exists()
+    assert (tmp_path / "stories" / "01_IMG_4610_live-frame.tiff").exists()
     assert item.notes == ["кадр из Live Photo, разрешение ниже оригинала"]
 
 
@@ -147,8 +91,8 @@ def test_export_live_key_when_frames_not_clearly_better(tmp_path):
     a = make_asset(filename="IMG_7.JPG", is_live=True)
     key = save_jpeg(scene_image(1), tmp_path / "key.jpg")
     video = write_mov(tmp_path / "IMG_7.MOV", [blurred(scene_image(1, size=(480, 360)), 6) for _ in range(10)])
-    item = export_asset(_library([a], {a.uuid: key}, {a.uuid: video}), _sc(a), "feed", 2, tmp_path / "theme",
-                        tmp_path / "tmp", AppConfig())
+    item = export_shot(_library([a], {a.uuid: key}, {a.uuid: video}), a, tmp_path / "feed", "02",
+                       tmp_path / "tmp", AppConfig())
     assert item.files == ["02_IMG_7.JPG"] and item.notes == []
 
 
@@ -160,67 +104,36 @@ def _stats(**kw):
     return ThemeStats(**base)
 
 
-def test_report_contains_header_table_and_summary(tmp_path):
-    v = make_asset(filename="IMG_1.HEIC", width=3024, height=4032)
-    h = make_asset(filename="IMG_2.HEIC", width=4032, height=3024)
-    failed = make_asset(filename="IMG_3.HEIC")
-    try_export, _ = _fake_export(failing={failed.uuid})
-    pools = Pools(feed=[Scored(v, 9, "Пирамиды | на закате"), Scored(failed, 8, "x")],
-                  stories=[Scored(h, 0.61, "эстетика 0.61 · резкость 0.50", crop="до 9:16: столб справа")])
-    assembled = assemble(pools, 5, 3, try_export)
-    assembled.feed[0].notes.append("кадр из Live Photo, разрешение ниже оригинала")
-    theme = Theme(name="Гиза", query="пирамиды")
+def _empty_posts(tmp_path):
+    return export_posts(FakeLibrary([], {}, {}), Posts([], []), tmp_path / "theme", tmp_path / "tmp", AppConfig())
+
+
+def test_report_no_cloud_header_and_summary(tmp_path):
     path = tmp_path / "report.md"
     header = ReportHeader(screen_model=None, model=None, effort=None, prompt_versions=None, run_at=NOW,
-                          warnings=["Режим без облака: query темы не учитывается"], album="Egypt.26")
-    write_report(path, theme, header, assembled, _stats())
+                          warnings=["Режим без облака: запрос темы не учитывается"], album="Egypt.26")
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, _empty_posts(tmp_path), {}, _stats())
     text = path.read_text(encoding="utf-8")
-    assert "# Гиза" in text and "Egypt.26" in text
-    assert "без облака" in text
-    assert "Режим без облака: query темы не учитывается" in text
-    assert "| Ранг | Файл(ы) | Список | Оценка | Ориентация | Пометки | Причина | Кадрирование |" in text
-    assert "| 1 | 01_IMG_1.HEIC | лента | 9 | вертикальная | кадр из Live Photo, разрешение ниже оригинала | " \
-           "Пирамиды \\| на закате | — |" in text
-    assert "| 1 | 01_IMG_2.HEIC | stories | 0.61 | горизонтальная |" in text
-    assert text.count("до 9:16: столб справа |") == 1
-    assert "Недобор: лента 4, stories 2" in text
-    assert "первая ступень $0.0123" in text and "вторая ступень $0.0045" in text
-    assert "по альбому $0.42" in text
-    assert "IMG_3.HEIC" in text and "network" in text
-    assert "IMG_9.HEIC — нет превью" in text
+    assert "# Гиза" in text and "Egypt.26" in text and "без облака" in text
+    assert "Режим без облака: запрос темы не учитывается" in text
+    assert "первая ступень $0.0123" in text and "вторая ступень $0.0045" in text and "по альбому $0.42" in text
+    assert "IMG_9.HEIC — нет превью" in text and "Недобор" not in text
 
 
-def test_report_cloud_header(tmp_path):
-    try_export, _ = _fake_export()
-    assembled = assemble(Pools(feed=[], stories=[]), 0, 0, try_export)
+def test_report_cloud_header_and_style_line(tmp_path):
     header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
-                          prompt_versions="screen-1, judge-1", run_at=NOW, warnings=[], album="Egypt.26")
+                          prompt_versions="screen-2, judge-4/style-ab12cd34, compose-1", run_at=NOW, warnings=[],
+                          album="Egypt.26", style="style.md от 2026-11-01, отпечаток ab12cd34, скриншотов: лента 2, "
+                                                  "stories 2")
     path = tmp_path / "report.md"
-    write_report(path, Theme(name="Гиза", query="пирамиды"), header, assembled, _stats())
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, _empty_posts(tmp_path), {}, _stats())
     text = path.read_text(encoding="utf-8")
-    assert "claude-haiku-5-5" in text and "claude-opus-5-5" in text
-    assert "effort: medium" in text and "screen-1, judge-1" in text
-    assert "без облака" not in text
-    assert "Недобор: нет" in text
-
-
-def test_report_shows_style_line(tmp_path):
-    try_export, _ = _fake_export()
-    assembled = assemble(Pools(feed=[], stories=[]), 0, 0, try_export)
-    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-haiku-5-5", effort="medium",
-                          prompt_versions="screen-2, judge-2/style-ab12cd34", run_at=NOW, warnings=[], album="Egypt.26",
-                          style="style.md от 2026-11-01, отпечаток ab12cd34, скриншотов в запросе: 2")
-    path = tmp_path / "report.md"
-    write_report(path, Theme(name="Гиза", query="пирамиды"), header, assembled, _stats())
-    assert "- Стиль: style.md от 2026-11-01, отпечаток ab12cd34, скриншотов в запросе: 2" in path.read_text(
-        encoding="utf-8")
+    assert "claude-haiku-5-5" in text and "claude-opus-5-5" in text and "без облака" not in text
+    assert "effort: medium" in text and "screen-2, judge-4/style-ab12cd34, compose-1" in text
+    assert "- Стиль: style.md от 2026-11-01, отпечаток ab12cd34, скриншотов: лента 2, stories 2" in text
 
 
 # --- посты: карусели и stories (v0.3) ---------------------------------------------------------
-
-from photo_chooser.export import export_posts  # noqa: E402
-from photo_chooser.report import write_posts_report  # noqa: E402
-from photo_chooser.select import Carousel, Posts, ShotFacts, Slide, StoryPick  # noqa: E402
 
 
 def _posts_library(tmp_path, n, failing=()):
@@ -305,7 +218,7 @@ def test_report_posts_tables(tmp_path):
     header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
                           prompt_versions="screen-2, judge-4, compose-1", run_at=NOW, warnings=[], album="Egypt.26")
     path = tmp_path / "report.md"
-    write_posts_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, facts, _posts_stats())
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, facts, _posts_stats())
     text = path.read_text(encoding="utf-8")
     assert "### Карусель 1 — Пирамиды" in text
     assert "| Слайд | Файл | Лента / stories | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |" in text
@@ -322,6 +235,6 @@ def test_report_fallback_warning_and_empty_posts(tmp_path):
                           prompt_versions="screen-2, judge-4, compose-1", run_at=NOW,
                           warnings=["Сборка не удалась — разложено по оценкам (refusal)"], album="Egypt.26")
     path = tmp_path / "report.md"
-    write_posts_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, {}, _posts_stats())
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, {}, _posts_stats())
     text = path.read_text(encoding="utf-8")
     assert "разложено по оценкам" in text and "Каруселей нет" in text and "Посты: каруселей 0, stories 0" in text

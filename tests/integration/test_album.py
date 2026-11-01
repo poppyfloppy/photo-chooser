@@ -49,7 +49,8 @@ def _run_no_cloud(library, tmp_path):
 
 
 def _exported(theme_dir: Path) -> list[str]:
-    return [p.name for d in ("feed", "stories") for p in sorted((theme_dir / d).iterdir())]
+    return [p.name for d in ("feed", "stories") for p in sorted((theme_dir / d).rglob("*"))
+            if p.is_file() and "alternatives" not in p.parts]
 
 
 def _stem(exported_name: str) -> str:

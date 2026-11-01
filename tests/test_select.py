@@ -3,8 +3,8 @@ from zoneinfo import ZoneInfo
 
 from conftest import make_asset
 from photo_chooser.config import Theme, Thresholds
-from photo_chooser.models import Judgment, LocalFeatures, Screening
-from photo_chooser.select import in_interval, pools_from_judgments, pools_local, screen_candidates
+from photo_chooser.models import Judgment, Screening
+from photo_chooser.select import in_interval, screen_candidates
 
 TH = Thresholds(min_feed_score=6, min_stories_score=4)
 GIZA = Theme(name="Гиза", query="пирамиды")
@@ -77,96 +77,3 @@ def test_screen_candidates_interval_only_includes_unscreened():
     quality = {screened.uuid: 0.1, unscreened.uuid: 0.9}
     got = screen_candidates([unscreened, screened], screenings, quality, DAY, min_relevance=5, limit=100)
     assert got == [screened, unscreened]  # черновая оценка первой ступени важнее локальной
-
-
-def test_feed_threshold_and_order():
-    a, b, c, d = (make_asset() for _ in range(4))
-    judgments = {a.uuid: _j(a, feed=6), b.uuid: _j(b, feed=9), c.uuid: _j(c, feed=5), d.uuid: _j(d, feed=6)}
-    quality = {a.uuid: 0.3, d.uuid: 0.8}
-    pools = pools_from_judgments([a, b, c, d], judgments, quality, TH, interval_only=False)
-    assert [s.asset for s in pools.feed] == [b, d, a]
-    assert [s.score for s in pools.feed] == [9, 6, 6]
-
-
-def test_feed_excludes_not_matching_theme():
-    a, b = make_asset(), make_asset()
-    judgments = {a.uuid: _j(a, feed=9, matches=False), b.uuid: _j(b, feed=7, reason="Сфинкс")}
-    pools = pools_from_judgments([a, b], judgments, {}, TH, interval_only=False)
-    assert [s.asset for s in pools.feed] == [b]
-    assert pools.feed[0].reason == "Сфинкс"
-    assert [s.asset for s in pools.stories] == [b]
-
-
-def test_interval_only_ignores_matches_theme():
-    a = make_asset()
-    pools = pools_from_judgments([a], {a.uuid: _j(a, feed=9, matches=False)}, {}, TH, interval_only=True)
-    assert [s.asset for s in pools.feed] == [a]
-
-
-def test_stories_verticals_first():
-    vertical = make_asset(width=3024, height=4032)
-    horizontal = make_asset(width=4032, height=3024)
-    judgments = {vertical.uuid: _j(vertical, stories=5), horizontal.uuid: _j(horizontal, stories=9)}
-    pools = pools_from_judgments([horizontal, vertical], judgments, {}, TH, interval_only=False)
-    assert [s.asset for s in pools.stories] == [vertical, horizontal]
-    assert [s.score for s in pools.stories] == [5, 9]
-
-
-def test_stories_lower_threshold():
-    a, b = make_asset(), make_asset()
-    judgments = {a.uuid: _j(a, feed=3, stories=4), b.uuid: _j(b, feed=3, stories=3)}
-    pools = pools_from_judgments([a, b], judgments, {}, TH, interval_only=False)
-    assert pools.feed == []
-    assert [s.asset for s in pools.stories] == [a]
-
-
-def test_square_counts_as_horizontal():
-    square = make_asset(width=3000, height=3000)
-    vertical = make_asset(width=3000, height=4000)
-    judgments = {square.uuid: _j(square, stories=9), vertical.uuid: _j(vertical, stories=4)}
-    pools = pools_from_judgments([square, vertical], judgments, {}, TH, interval_only=False)
-    assert [s.asset for s in pools.stories] == [vertical, square]
-
-
-def test_unjudged_candidates_excluded():
-    judged, unjudged = make_asset(), make_asset()
-    pools = pools_from_judgments([judged, unjudged], {judged.uuid: _j(judged, feed=8)}, {}, TH, interval_only=True)
-    assert [s.asset for s in pools.feed] == [judged]
-    assert [s.asset for s in pools.stories] == [judged]
-
-
-def _f(a, aesthetic, sharp, face):
-    return LocalFeatures(uuid=a.uuid, aesthetic=aesthetic, is_utility=False, sharpness=sharp, mean_luma=0.5,
-                         face_quality=face, feature_print=b"")
-
-
-def test_local_pools_order_and_verticals_first():
-    h1 = make_asset(width=4032, height=3024)
-    v1 = make_asset(width=3024, height=4032)
-    h2 = make_asset(width=4032, height=3024)
-    quality = {h1.uuid: 0.9, v1.uuid: 0.5, h2.uuid: 0.7}
-    feats = {a.uuid: _f(a, 0.5, 10, None) for a in (h1, v1, h2)}
-    pools = pools_local([h1, v1, h2], quality, feats)
-    assert [s.asset for s in pools.feed] == [h1, h2, v1]
-    assert [s.asset for s in pools.stories] == [v1, h1, h2]
-    assert pools.feed[0].score == 0.9
-
-
-def test_local_pools_reason_format():
-    a, b = make_asset(), make_asset()
-    feats = {a.uuid: _f(a, 0.72, 50.0, 0.65), b.uuid: _f(b, None, 10.0, None)}
-    pools = pools_local([a, b], {a.uuid: 0.8, b.uuid: 0.2}, feats)
-    by = {s.asset.uuid: s.reason for s in pools.feed}
-    assert by[a.uuid] == "эстетика 0.72 · резкость 1.00 · лица 0.65"  # резкость — ранг среди кандидатов
-    assert by[b.uuid] == "резкость 0.00"
-
-
-
-def test_pools_carry_crop_for_their_list():
-    a = make_asset(width=4032, height=3024)
-    j = Judgment(uuid=a.uuid, matches_theme=True, feed_score=8, stories_score=6, reason="r",
-                 crop_feed="до 4:5: пирамида справа", crop_stories="до 9:16: пирамида по центру")
-    pools = pools_from_judgments([a], {a.uuid: j}, {}, TH, interval_only=False)
-    assert pools.feed[0].crop == "до 4:5: пирамида справа"
-    assert pools.stories[0].crop == "до 9:16: пирамида по центру"
-    assert pools_local([a], {a.uuid: 0.5}, {}).feed[0].crop == ""

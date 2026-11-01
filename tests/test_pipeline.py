@@ -11,10 +11,20 @@ from conftest import make_asset
 from fakes import FakeClient, FakeLibrary, api_error, auth_error, fake_response, ids_in, last_text, output_model_of
 from imaging import blurred, save_jpeg, varied_scene
 from photo_chooser.cache import Cache
-from photo_chooser.config import AppConfig, ConfigError, ShortlistCfg, Theme, TripConfig
+from photo_chooser.config import AppConfig, ConfigError, PostsCfg, Theme, TripConfig
 from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice
 from photo_chooser.judge.prompts import JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
-from photo_chooser.judge.stages import JudgeItem, JudgeOutput, ScreenItem, ScreenMatch, ScreenOutput
+from photo_chooser.judge.stages import (
+    ComposeCarousel,
+    ComposeOutput,
+    ComposeSlide,
+    ComposeStory,
+    JudgeItem,
+    JudgeOutput,
+    ScreenItem,
+    ScreenMatch,
+    ScreenOutput,
+)
 from photo_chooser.models import AlbumRef
 from photo_chooser.pipeline import RunOptions, run
 
@@ -62,7 +72,7 @@ class Album:
 
 
 def _cfg(tmp_path, feed=3, stories=5):
-    return AppConfig(output_dir=tmp_path / "out", shortlist=ShortlistCfg(feed=feed, stories=stories))
+    return AppConfig(output_dir=tmp_path / "out", posts=PostsCfg(carousel_size=feed, stories=stories))
 
 
 def _trip(*themes, timezone="Africa/Cairo"):
@@ -75,10 +85,21 @@ TEMPLES = Theme(name="Храмы", query="храмы")
 DAY = Theme(name="День 1", start=datetime(2026, 3, 14, 0, 0), end=datetime(2026, 3, 14, 23, 59))
 
 
-def handler(match=True, fail_theme=None):
+def compose_reply(ids, slides=3, stories=2):
+    """Сборка из заглушки: первые slides кандидатов — карусель «Сюжет» (первый с запасным), следующие — stories."""
+    first = [ComposeSlide(id=ids[0], alternatives=ids[slides:slides + 1])] if ids else []
+    rest = [ComposeSlide(id=i, alternatives=[]) for i in ids[1:slides]]
+    story_ids = ids[slides + 1:slides + 1 + stories]
+    return ComposeOutput(carousels=[ComposeCarousel(title="Сюжет", slides=first + rest)] if ids else [],
+                         stories=[ComposeStory(id=i, kind="interesting", hint="пояснить") for i in story_ids])
+
+
+def handler(match=True, fail_theme=None, compose=None):
     def h(n, kw):
         content = kw["messages"][0]["content"]
         ids = ids_in(content)
+        if output_model_of(kw) is ComposeOutput:
+            return compose(n, kw) if compose else fake_response(compose_reply(ids))
         if output_model_of(kw) is ScreenOutput:
             n_themes = len(re.findall(r"^\d+\. ", last_text(content), flags=re.M))
             matches = [ScreenMatch(theme=t, relevance=8) for t in range(1, n_themes + 1)] if match else []
@@ -97,6 +118,14 @@ def _run(album, trip, cfg, cache, client=None, **opts):
     return result, client
 
 
+def _feed_files(theme_dir):
+    return sorted(p.name for p in (theme_dir / "feed").rglob("*") if p.is_file() and "alternatives" not in p.parts)
+
+
+def _story_files(theme_dir):
+    return sorted(p.name for p in (theme_dir / "stories").iterdir()) if (theme_dir / "stories").exists() else []
+
+
 def _files(path):
     return sorted(p.name for p in path.iterdir()) if path.exists() else []
 
@@ -112,7 +141,8 @@ def test_no_cloud_end_to_end(tmp_path):
                  NOW)
     theme_dir = result.run_dir / "Гиза"
     assert result.run_dir == tmp_path / "out" / "Egypt.26" / "2026-11-01_1530"
-    feed, stories = _files(theme_dir / "feed"), _files(theme_dir / "stories")
+    feed, stories = _feed_files(theme_dir), _story_files(theme_dir)
+    assert _files(theme_dir / "feed") == ["carousel-1 Лучшее по локальной оценке"]
     assert len(feed) == 3 and [f[:3] for f in feed] == ["01_", "02_", "03_"]
     exported = " ".join(feed + stories)
     assert "SHOT" not in exported and "BLUR" not in exported
@@ -149,7 +179,7 @@ def test_assets_without_preview_skipped_and_counted(tmp_path):
     report = result.themes[0].report_path.read_text(encoding="utf-8")
     assert "Без превью: 2" in report and "IMG_NP0.JPG — нет превью" in report
     theme_dir = result.run_dir / "Гиза"
-    assert "NP" not in " ".join(_files(theme_dir / "feed") + _files(theme_dir / "stories"))
+    assert "NP" not in " ".join(_feed_files(theme_dir) + _story_files(theme_dir))
     assert album.library.exported and not {"NOPREV0", "NOPREV1"} & set(album.library.exported)
 
 
@@ -161,11 +191,11 @@ def test_screen_runs_once_for_all_themes(tmp_path):
     assert len(client.calls_for(JudgeOutput)) == 9  # 3 темы × 45 кандидатов → по 3 группы
     for outcome in result.themes:
         assert outcome.error is None
-        assert len(_files(outcome.report_path.parent / "feed")) == 3
+        assert len(_feed_files(outcome.report_path.parent)) == 3
     report = result.themes[0].report_path.read_text(encoding="utf-8")
     assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}, {JUDGE_PROMPT_VERSION}" in report
     spent = cache.album_spend("ALB")
-    assert spent == pytest.approx(12 * (20_000 * 0.10 / 1e6 + 2_000 * 0.50 / 1e6))
+    assert spent == pytest.approx(15 * (20_000 * 0.10 / 1e6 + 2_000 * 0.50 / 1e6))  # 3 + 9 + сборка по 3 темам
     last_report = result.themes[-1].report_path.read_text(encoding="utf-8")  # накоплено на момент отчёта
     assert f"по альбому ${spent:.2f}" in last_report
 
@@ -177,7 +207,7 @@ def test_no_matches_in_screen_skips_judge(tmp_path):
     assert len(client.calls_for(ScreenOutput)) == 1
     assert client.calls_for(JudgeOutput) == []
     report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert "Недобор: лента 20, stories 40" in report
+    assert "Посты: каруселей 0, stories 0" in report
 
 
 def test_interval_only_trip_skips_screen(tmp_path):
@@ -185,7 +215,7 @@ def test_interval_only_trip_skips_screen(tmp_path):
     result, client = _run(album, _trip(DAY), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"))
     assert client.calls_for(ScreenOutput) == []
     assert len(client.calls_for(JudgeOutput)) == 1
-    assert len(_files(result.run_dir / "День 1" / "feed")) == 3
+    assert len(_feed_files(result.run_dir / "День 1")) == 3
 
 
 def test_empty_interval_no_calls(tmp_path):
@@ -194,7 +224,7 @@ def test_empty_interval_no_calls(tmp_path):
     result, client = _run(album, _trip(later), _cfg(tmp_path, feed=20, stories=40), Cache(tmp_path / "c.sqlite"))
     assert client.calls == []
     report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert "Прошло интервал: 0" in report and "Недобор: лента 20, stories 40" in report
+    assert "Прошло интервал: 0" in report and "Посты: каруселей 0, stories 0" in report
 
 
 def test_interval_uses_trip_timezone(tmp_path):
@@ -256,7 +286,7 @@ def test_theme_failure_does_not_stop_other_themes(tmp_path):
     result, _ = _run(album, _trip(GIZA, NILE), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
     giza, nile = result.themes
     assert giza.error is not None and nile.error is None
-    assert len(_files(result.run_dir / "Нил" / "feed")) == 3
+    assert len(_feed_files(result.run_dir / "Нил")) == 3
     assert "Тема не обработана" in giza.report_path.read_text(encoding="utf-8")
 
 
@@ -300,10 +330,10 @@ def test_editing_theme_interval_keeps_stage1_relevance(tmp_path):
     result, client = _run(album, _trip(edited), cfg, cache)
     assert client.calls_for(ScreenOutput) == []  # набор тем тот же — первая ступень из кэша
     assert len(client.calls_for(JudgeOutput)) == 1  # ключ второй ступени включает интервал (FR-9.3)
-    assert len(_files(result.run_dir / "Гиза" / "feed")) == 3
+    assert len(_feed_files(result.run_dir / "Гиза")) == 3
     query_only = Theme(name="Гиза", query="пирамиды")
     result, _ = _run(album, _trip(query_only), cfg, cache)
-    assert len(_files(result.run_dir / "Гиза" / "feed")) == 3
+    assert len(_feed_files(result.run_dir / "Гиза")) == 3
 
 
 def test_screen_covers_whole_pool_when_any_query_theme_in_scope(tmp_path):
@@ -386,7 +416,7 @@ def _with_screenshots(album, tmp_path, n=1):
 def _style_cfg(tmp_path, **kw):
     from photo_chooser.config import StyleCfg
 
-    return AppConfig(output_dir=tmp_path / "out", shortlist=ShortlistCfg(feed=3, stories=5),
+    return AppConfig(output_dir=tmp_path / "out", posts=PostsCfg(carousel_size=3, stories=5),
                      style=StyleCfg(albums=["Snapseed"], screenshots_album="Instagram style", **kw))
 
 
@@ -435,3 +465,63 @@ def test_dry_run_estimate_includes_style_tokens(tmp_path):
     styled = run(_trip(GIZA), _style_cfg(tmp_path), RunOptions(dry_run=True), cache=Cache(tmp_path / "b.sqlite"),
                  style_path=style_path, **common)
     assert styled.estimate_usd > plain.estimate_usd
+
+
+
+def test_cloud_run_builds_posts(tmp_path):
+    album = Album(tmp_path, n=8)
+    result, client = _run(album, _trip(GIZA), _cfg(tmp_path, feed=9, stories=9), Cache(tmp_path / "c.sqlite"))
+    theme_dir = result.run_dir / "Гиза"
+    assert _files(theme_dir / "feed") == ["carousel-1 Сюжет"]
+    assert len(_feed_files(theme_dir)) == 3 and len(_story_files(theme_dir)) == 2
+    assert len(_files(theme_dir / "feed" / "carousel-1 Сюжет" / "alternatives")) == 1
+    assert len(client.calls_for(ComposeOutput)) == 1
+    report = result.themes[0].report_path.read_text(encoding="utf-8")
+    assert "### Карусель 1 — Сюжет" in report and "интересное | пояснить" in report
+    assert "Посты: каруселей 1 (3), stories 2" in report and "compose-1" in report
+    assert result.themes[0].posts.carousels[0].title == "Сюжет"
+
+
+def test_compose_failure_falls_back(tmp_path):
+    album = Album(tmp_path, n=5)
+    client = FakeClient(handler(compose=lambda n, kw: api_error() if "«Гиза" in last_text(kw["messages"][0]["content"])
+                                else fake_response(compose_reply(ids_in(kw["messages"][0]["content"])))))
+    result, _ = _run(album, _trip(GIZA, NILE), _cfg(tmp_path, feed=9, stories=9), Cache(tmp_path / "c.sqlite"), client)
+    giza, nile = result.themes
+    report = giza.report_path.read_text(encoding="utf-8")
+    assert "Сборка не удалась — разложено по оценкам" in report and giza.error is None
+    assert _files(result.run_dir / "Гиза" / "feed") == ["carousel-1 Лучшее по оценкам"]
+    assert len(_feed_files(result.run_dir / "Гиза")) == 5  # все оценены на 7 ≥ 6
+    assert _files(result.run_dir / "Нил" / "feed") == ["carousel-1 Сюжет"]
+
+
+def test_compose_refusal_falls_back(tmp_path):
+    album = Album(tmp_path, n=4)
+    client = FakeClient(handler(compose=lambda n, kw: fake_response(text="no", stop_reason="refusal")))
+    result, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
+    assert "разложено по оценкам (модель отказалась)" in result.themes[0].report_path.read_text(encoding="utf-8")
+
+
+def test_no_candidates_skips_compose(tmp_path):
+    album = Album(tmp_path, n=4)
+    client = FakeClient(handler(match=False))
+    result, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
+    assert client.calls_for(ComposeOutput) == [] and client.calls_for(JudgeOutput) == []
+    assert _feed_files(result.run_dir / "Гиза") == [] and _story_files(result.run_dir / "Гиза") == []
+
+
+def test_compose_cached_on_rerun(tmp_path):
+    album = Album(tmp_path, n=5)
+    cache, cfg = Cache(tmp_path / "c.sqlite"), _cfg(tmp_path)
+    _run(album, _trip(GIZA), cfg, cache)
+    result, client = _run(album, _trip(GIZA), cfg, cache)
+    assert client.calls == []
+    assert _files(result.run_dir / "Гиза" / "feed") == ["carousel-1 Сюжет"]
+
+
+def test_dry_run_estimate_includes_compose(tmp_path):
+    album = Album(tmp_path, n=5)
+    few = AppConfig(output_dir=tmp_path / "out", cloud=AppConfig().cloud.model_copy(update={"compose_candidates": 1}))
+    small, _ = _run(album, _trip(GIZA), few, Cache(tmp_path / "a.sqlite"), dry_run=True)
+    full, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "b.sqlite"), dry_run=True)
+    assert full.estimate_usd > small.estimate_usd > 0
