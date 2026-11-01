@@ -99,11 +99,13 @@ def check_credentials(client) -> None:
                           "Без облака можно запустить с --no-cloud.")
 
 
-def call_model(client, model: str, effort: str, system: str, content: list[dict], output_model: type[BaseModel]):
-    """messages.create со схемой ответа в output_config.format: usage и stop_reason доступны и тогда,
-    когда текст ответа не разбирается (refusal с текстом, обрезка по max_tokens)."""
-    schema = anthropic.transform_schema(output_model)
-    output_config = {"effort": effort, "format": {"type": "json_schema", "schema": schema}}
+def call_model(client, model: str, effort: str, system: str, content: list[dict],
+               output_model: type[BaseModel] | None):
+    """messages.create со схемой ответа в output_config.format (без схемы — свободный текст): usage и stop_reason
+    доступны и тогда, когда текст ответа не разбирается (refusal с текстом, обрезка по max_tokens)."""
+    output_config: dict = {"effort": effort}
+    if output_model is not None:
+        output_config["format"] = {"type": "json_schema", "schema": anthropic.transform_schema(output_model)}
     kwargs = dict(model=model, max_tokens=MAX_TOKENS, system=system,
                   messages=[{"role": "user", "content": content}], output_config=output_config)
     for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):

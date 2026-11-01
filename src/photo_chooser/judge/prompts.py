@@ -22,3 +22,10 @@ For every photo (each is preceded by its id), judge it against the theme given a
 - stories_score (1-10): suitability for Instagram stories — a lighter, less selective feed of the trip: good on-theme shots that tell the trip, including ones not strong enough for the feed. People are not required. Minor technical flaws are acceptable.
 - reason: one short sentence in the language of the theme on what makes the photo work or not. Do not treat the absence of people as a drawback.
 Return exactly one item for every photo id."""
+
+STYLE_SYSTEM_PROMPT = """You study the style of one person's Instagram page to help choose new travel photos for it.
+You get published posts, each labelled with its month (newest first), and screenshots of the page: feed grids and story highlights.
+Write a description of the page's style in Russian, about 300 words, in Markdown with two sections titled «Лента» and «Stories».
+In each section cover: processing and colour grading, light, composition and framing, typical subjects, and what never appears on the page.
+Give recent posts more weight than old ones: the style may have changed over the years.
+Describe the style only; do not describe individual photos. Output only the description."""
