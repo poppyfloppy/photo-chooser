@@ -374,3 +374,64 @@ def test_prepare_album_memory_stays_flat(tmp_path):
                          text=True, check=True)
     growth_mb = int(out.stdout.strip().splitlines()[-1])
     assert growth_mb < 250, f"пиковая память выросла на {growth_mb} МБ за 120 превью"
+
+
+def _with_screenshots(album, tmp_path, n=1):
+    shots = [make_asset(uuid=f"SHOT{i}", width=1179, height=2556, is_screenshot=True) for i in range(n)]
+    previews = {a.uuid: save_jpeg(varied_scene(500 + i, (590, 1278)), tmp_path / f"shot{i}.jpg")
+                for i, a in enumerate(shots)}
+    album.library.add_album(AlbumRef("GRID", "Instagram style", n), shots, previews)
+
+
+def _style_cfg(tmp_path, **kw):
+    from photo_chooser.config import StyleCfg
+
+    return AppConfig(output_dir=tmp_path / "out", shortlist=ShortlistCfg(feed=3, stories=5),
+                     style=StyleCfg(albums=["Snapseed"], screenshots_album="Instagram style", **kw))
+
+
+def test_run_with_style_sends_profile_and_marks_header(tmp_path):
+    album = Album(tmp_path, n=4)
+    _with_screenshots(album, tmp_path)
+    style_path = tmp_path / "style.md"
+    style_path.write_text("## Лента\nМягкий тёплый свет.\n", encoding="utf-8")
+    client = FakeClient(handler())
+    result = run(_trip(GIZA), _style_cfg(tmp_path, reference_images=1), RunOptions(), album.library,
+                 Cache(tmp_path / "c.sqlite"), lambda: client, NOW, style_path=style_path)
+    judge_calls = client.calls_for(JudgeOutput)
+    assert judge_calls and "Мягкий тёплый свет." in judge_calls[0]["system"]
+    assert "Мягкий тёплый свет." not in client.calls_for(ScreenOutput)[0]["system"]
+    report = result.themes[0].report_path.read_text(encoding="utf-8")
+    assert "- Стиль: style.md от " in report and "скриншотов в запросе: 1" in report
+    assert "judge-2/style-" in report
+
+
+def test_run_without_profile_warns(tmp_path):
+    album = Album(tmp_path, n=3)
+    result = run(_trip(GIZA), _style_cfg(tmp_path), RunOptions(), album.library, Cache(tmp_path / "c.sqlite"),
+                 lambda: FakeClient(handler()), NOW, style_path=tmp_path / "nope.md")
+    report = result.themes[0].report_path.read_text(encoding="utf-8")
+    assert "Профиль стиля не найден" in report and "photo-chooser style" in report
+
+
+def test_run_no_cloud_ignores_style(tmp_path):
+    album = Album(tmp_path, n=3)
+    style_path = tmp_path / "style.md"
+    style_path.write_text("## Лента\n…\n", encoding="utf-8")
+    result = run(_trip(GIZA), _style_cfg(tmp_path), RunOptions(no_cloud=True), album.library,
+                 Cache(tmp_path / "c.sqlite"), lambda: None, NOW, style_path=style_path)
+    report = result.themes[0].report_path.read_text(encoding="utf-8")
+    assert "Стиль:" not in report and "Профиль стиля не найден" not in report
+
+
+def test_dry_run_estimate_includes_style_tokens(tmp_path):
+    album = Album(tmp_path, n=5)
+    _with_screenshots(album, tmp_path, n=2)
+    style_path = tmp_path / "style.md"
+    style_path.write_text("## Лента\n" + "тёплый свет " * 200, encoding="utf-8")
+    common = dict(library=album.library, client_factory=lambda: None, now=NOW)
+    plain = run(_trip(GIZA), _style_cfg(tmp_path), RunOptions(dry_run=True), cache=Cache(tmp_path / "a.sqlite"),
+                **common)
+    styled = run(_trip(GIZA), _style_cfg(tmp_path), RunOptions(dry_run=True), cache=Cache(tmp_path / "b.sqlite"),
+                 style_path=style_path, **common)
+    assert styled.estimate_usd > plain.estimate_usd

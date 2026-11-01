@@ -17,12 +17,13 @@ from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme, TripConfig, themes_key
 from photo_chooser.export import Assembled, assemble, ensure_outside_library, export_asset, new_run_dir, safe_name
 from photo_chooser.judge.cost import check_budget, estimate_run_usd, price_for
-from photo_chooser.judge.prompts import JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
+from photo_chooser.judge.prompts import SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import (
     JudgeRunner,
     ScreenRunner,
     StageOutcome,
     check_credentials,
+    judge_prompt_version,
     run_judge,
     run_screen,
 )
@@ -30,8 +31,10 @@ from photo_chooser.library.base import PhotosLibrary
 from photo_chooser.models import AlbumRef, Asset, LocalFeatures, Screening
 from photo_chooser.report import ReportHeader, ThemeStats, write_report
 from photo_chooser.select import Pools, in_interval, pools_from_judgments, pools_local, screen_candidates
+from photo_chooser.style import StyleContext, load_style
 
 PROGRESS_EVERY = 50
+NO_STYLE_WARNING = "Профиль стиля не найден — выполните `photo-chooser style`"
 NO_CLOUD_QUERY_WARNING = ("Режим без облака: запрос темы не учитывается — кандидаты: все снимки {scope} после "
                           "отсева, ранжирование только по локальной оценке")
 
@@ -121,7 +124,8 @@ def _screen_scope(trip: TripConfig, theme_assets: dict[str, list[Asset]], pool: 
 
 
 def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets: dict[str, list[Asset]],
-              screen_scope: list[Asset], cache: Cache, screen_model: str, judge_model: str) -> float:
+              screen_scope: list[Asset], cache: Cache, screen_model: str, judge_model: str,
+              style: StyleContext | None) -> float:
     price_for(cfg.cloud, screen_model)
     price_for(cfg.cloud, judge_model)
     key = themes_key(state.album.title, trip.query_themes)
@@ -141,9 +145,10 @@ def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets:
             continue
         cands = screen_candidates(assets, screenings, state.quality, t, cfg.thresholds.min_theme_relevance,
                                   cfg.cloud.candidates_per_theme)
-        n_judge.append(sum(cache.get_judgment(a.uuid, t.key(), judge_model, JUDGE_PROMPT_VERSION) is None
+        n_judge.append(sum(cache.get_judgment(a.uuid, t.key(), judge_model, judge_prompt_version(style)) is None
                            for a in cands))
-    return estimate_run_usd(n_screen, n_judge, cfg.cloud, screen_model, judge_model)
+    return estimate_run_usd(n_screen, n_judge, cfg.cloud, screen_model, judge_model,
+                            judge_extra_tokens=style.extra_tokens if style else 0)
 
 
 def _theme_dir(run_dir: Path, theme: Theme) -> Path:
@@ -159,7 +164,9 @@ def _theme_dir(run_dir: Path, theme: Theme) -> Path:
 
 
 def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibrary, cache: Cache,
-        client_factory: Callable[[], object], now: datetime, log: Callable[[str], None] = _no_log) -> RunResult:
+        client_factory: Callable[[], object], now: datetime, log: Callable[[str], None] = _no_log,
+        style_path: Path | None = None) -> RunResult:
+    """style_path — профиль стиля (FR-11); None — стиль выключен."""
     ensure_outside_library(cfg.output_dir)
     client = None
     if not opts.no_cloud and not opts.dry_run:
@@ -173,9 +180,16 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
     screen_model, judge_model = cfg.cloud.screen_model, opts.model or cfg.cloud.model
     screen_scope = _screen_scope(trip, theme_assets, state.pool)
 
+    style: StyleContext | None = None
+    style_warnings: list[str] = []
+    if not opts.no_cloud and style_path is not None:
+        style = load_style(style_path, library, cfg)
+        style_warnings = style.warnings if style else [NO_STYLE_WARNING]
+
     estimate = 0.0
     if not opts.no_cloud:
-        estimate = _estimate(trip, cfg, state, theme_assets, screen_scope, cache, screen_model, judge_model)
+        estimate = _estimate(trip, cfg, state, theme_assets, screen_scope, cache, screen_model, judge_model,
+                             style)
         limit = opts.max_cost if opts.max_cost is not None else cfg.cloud.max_cost_usd_per_album
         check_budget(cache.album_spend(album.uuid), estimate, limit)
     if opts.dry_run:
@@ -204,7 +218,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             log(f"Тема «{t.name}»")
             theme_dir = _theme_dir(run_dir, t)
             assets = theme_assets[t.key()]
-            warnings: list[str] = []
+            warnings: list[str] = list(style_warnings)
             judge: StageOutcome | None = None
             error = None
             th = cfg.thresholds
@@ -224,7 +238,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 if cands:
                     try:
                         if judge_runner is None:
-                            judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview)
+                            judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview, style=style)
                         order = {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0) / 10
                                  for a in cands}
                         judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid)
@@ -244,8 +258,11 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 screen_model=None if opts.no_cloud or screen is None else screen_model,
                 model=None if opts.no_cloud else judge_model,
                 effort=None if opts.no_cloud else cfg.cloud.effort,
-                prompt_versions=None if opts.no_cloud else f"{SCREEN_PROMPT_VERSION}, {JUDGE_PROMPT_VERSION}",
-                run_at=now, warnings=warnings, album=album.title)
+                prompt_versions=(None if opts.no_cloud
+                                 else f"{SCREEN_PROMPT_VERSION}, {judge_prompt_version(style)}"),
+                run_at=now, warnings=warnings, album=album.title,
+                style=None if style is None else (f"style.md от {style.created_at:%Y-%m-%d}, отпечаток "
+                                                  f"{style.fingerprint}, скриншотов в запросе: {len(style.references)}"))
             stats = ThemeStats(
                 read=len(state.assets), no_preview=len(state.no_preview), junk=len(state.junk),
                 duplicates_collapsed=state.duplicates_collapsed, in_interval=len(assets),

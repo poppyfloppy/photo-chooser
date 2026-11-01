@@ -29,6 +29,11 @@ class FakeLibrary:
         self.live_requests: list[str] = []
         self.preview_requests: list[str] = []
 
+    def add_album(self, album: AlbumRef, assets: list[Asset], previews: dict[str, Path]) -> None:
+        self._albums.append(album)
+        self._assets[album.uuid] = list(assets)
+        self._previews.update(previews)
+
     def albums(self) -> list[AlbumRef]:
         return list(self._albums)
 

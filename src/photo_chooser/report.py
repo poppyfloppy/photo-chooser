@@ -19,6 +19,7 @@ class ReportHeader:
     run_at: datetime
     warnings: list[str] = field(default_factory=list)
     album: str = ""
+    style: str | None = None  # строка о профиле стиля (FR-6.3); None — без профиля
 
 
 @dataclass
@@ -75,6 +76,8 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, assembled: Asse
         lines.append(f"- Первая ступень: {header.screen_model or '—'}; вторая ступень: {header.model or '—'}")
         lines.append(f"- effort: {header.effort or '—'}")
         lines.append(f"- Версия промпта: {header.prompt_versions or '—'}")
+        if header.style:
+            lines.append(f"- Стиль: {header.style}")
     lines.append("")
     for w in header.warnings:
         lines.append(f"> ⚠️ {w}")

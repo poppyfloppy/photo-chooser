@@ -21,6 +21,7 @@ uv run photo-chooser run trip.yaml --dry-run      # только локальн�
 uv run photo-chooser run trip.yaml --no-cloud     # без Claude, бесплатно: отладка механики
 uv run photo-chooser run trip.yaml --model claude-sonnet-5-5   # модель второй ступени на этот запуск
 uv run photo-chooser run trip.yaml --max-cost 8   # разово поднять лимит бюджета альбома
+uv run photo-chooser style                        # построить профиль стиля страницы Instagram
 uv run photo-chooser run --album "Египет 2026" --theme "Гиза" --query "пирамиды, сфинкс" \
     --from "2026-03-12 06:00" --to "2026-03-12 14:00" --timezone Africa/Cairo
 ```
@@ -73,6 +74,24 @@ cloud:
 ```
 
 Кэш признаков, оценок и расходов — `~/Library/Caches/photo-chooser/`. Повторный запуск тех же тем на той же модели не платит за облако повторно.
+
+## Стиль страницы
+
+Чтобы отбор учитывал стиль вашей страницы Instagram, добавьте в `~/.config/photo-chooser/config.yaml`:
+
+```yaml
+style:
+  albums: [Snapseed, Instasize]        # опубликованные посты; одноимённые альбомы берутся все
+  screenshots_album: Instagram style   # скриншоты гридов и подборок stories
+```
+
+и постройте профиль:
+
+```bash
+uv run photo-chooser style
+```
+
+Команда выберет около 40 постов с 2018 года (свежие — чаще) и скриншоты страницы, покажет оценку стоимости (на `claude-opus-5-5` около $0.25) и после подтверждения запишет описание стиля в `~/.config/photo-chooser/style.md`. Его можно читать и править руками. Профиль и первые два скриншота из альбома (порядок задаётся в Photos) уходят в каждый запрос второй ступени. Правка профиля пересчитывает только вторую ступень. Без `style.md` отбор идёт как раньше, с предупреждением в отчёте.
 
 ## Тесты
 

@@ -127,7 +127,8 @@ class PhotoKitLibrary:
             return []
         options = self._image_options()
         if not album_order:  # без sortDescriptors PhotoKit отдаёт снимки в порядке альбома
-            options.setSortDescriptors_([Foundation.NSSortDescriptor.sortDescriptorWithKey_ascending_("creationDate", True)])
+            by_date = Foundation.NSSortDescriptor.sortDescriptorWithKey_ascending_("creationDate", True)
+            options.setSortDescriptors_([by_date])
         result = Photos.PHAsset.fetchAssetsInAssetCollection_options_(found.objectAtIndex_(0), options)
         out = []
         for i in range(result.count()):
