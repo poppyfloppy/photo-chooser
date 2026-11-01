@@ -461,3 +461,15 @@ def test_judge2_cache_not_reused_after_crop_advice(tmp_path):
     client = FakeClient(judge_handler())
     run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 1
+
+
+def test_judge3_cache_not_reused_after_potential_rubric(tmp_path):
+    # D12: оценка по потенциалу после обработки — оценки judge-3 пересчитываются
+    from photo_chooser.models import Judgment
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Judgment(uuid=a.uuid, matches_theme=True, feed_score=4, stories_score=4, reason="r") for a in assets]
+    cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-3")
+    client = FakeClient(judge_handler())
+    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    assert len(client.calls) == 1
