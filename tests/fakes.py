@@ -1,5 +1,6 @@
 """Заглушки внешних систем для юнит-тестов: Photos (FakeLibrary) и Claude API (FakeClient)."""
 
+import json
 import shutil
 import threading
 from pathlib import Path
@@ -26,6 +27,7 @@ class FakeLibrary:
         self._failing = failing or set()
         self.exported: list[str] = []
         self.live_requests: list[str] = []
+        self.preview_requests: list[str] = []
 
     def albums(self) -> list[AlbumRef]:
         return list(self._albums)
@@ -37,6 +39,7 @@ class FakeLibrary:
         return list(self._assets.get(album.uuid, []))
 
     def preview(self, asset: Asset, long_side: int) -> Path | None:
+        self.preview_requests.append(asset.uuid)
         return self._previews.get(asset.uuid)
 
     def export_original(self, asset: Asset, dest_dir: Path) -> Path:
@@ -70,9 +73,27 @@ def api_error() -> anthropic.APIStatusError:
     return anthropic.InternalServerError("overloaded", response=httpx2.Response(500, request=request), body=None)
 
 
-def fake_response(parsed, *, stop_reason="end_turn", input_tokens=20_000, output_tokens=2_000):
-    return SimpleNamespace(parsed_output=parsed, stop_reason=stop_reason,
+def auth_error() -> anthropic.AuthenticationError:
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.AuthenticationError("invalid x-api-key", response=httpx2.Response(401, request=request), body=None)
+
+
+def fake_response(parsed=None, *, text=None, stop_reason="end_turn", input_tokens=20_000, output_tokens=2_000):
+    """Ответ messages.create: блок thinking (как у моделей с adaptive thinking) и текст с JSON по схеме."""
+    body = text if text is not None else (parsed.model_dump_json() if parsed is not None else None)
+    content = [SimpleNamespace(type="thinking", thinking="")]
+    if body is not None:
+        content.append(SimpleNamespace(type="text", text=body))
+    return SimpleNamespace(content=content, stop_reason=stop_reason,
                            usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens))
+
+
+def output_model_of(kwargs: dict):
+    """Какая ступень запрошена — по JSON-схеме в output_config.format."""
+    from photo_chooser.judge.stages import JudgeOutput, ScreenOutput
+
+    schema = json.dumps(kwargs["output_config"]["format"]["schema"])
+    return JudgeOutput if "matches_theme" in schema else ScreenOutput
 
 
 def ids_in(content: list[dict]) -> list[str]:
@@ -87,7 +108,7 @@ class _Messages:
     def __init__(self, owner: "FakeClient", beta: bool):
         self._owner, self._beta = owner, beta
 
-    def parse(self, **kwargs):
+    def create(self, **kwargs):
         return self._owner._call(self._beta, kwargs)
 
 
@@ -113,5 +134,5 @@ class FakeClient:
             raise result
         return result
 
-    def calls_for(self, output_format) -> list[dict]:
-        return [c for c in self.calls if c["output_format"] is output_format]
+    def calls_for(self, output_model) -> list[dict]:
+        return [c for c in self.calls if output_model_of(c) is output_model]

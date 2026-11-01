@@ -6,6 +6,7 @@
 
 import base64
 import math
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -13,19 +14,13 @@ from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 import anthropic
+import objc
 import pydantic
 from pydantic import BaseModel
 
 from photo_chooser.cache import Cache
-from photo_chooser.config import CloudCfg, Theme, themes_key
-from photo_chooser.judge.cost import (
-    EST_OUTPUT_TOKENS_JUDGE,
-    EST_OUTPUT_TOKENS_SCREEN,
-    HAIKU_PRICE_LIMIT_TOKENS,
-    group_input_tokens,
-    price_for,
-    usage_usd,
-)
+from photo_chooser.config import CloudCfg, ConfigError, Theme, themes_key
+from photo_chooser.judge.cost import HAIKU_PRICE_LIMIT_TOKENS, group_input_tokens, price_for, usage_usd
 from photo_chooser.judge.prompts import (
     JUDGE_PROMPT_VERSION,
     JUDGE_SYSTEM_PROMPT,
@@ -97,15 +92,25 @@ def make_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(max_retries=CLIENT_MAX_RETRIES)
 
 
+def check_credentials(client) -> None:
+    """SDK создаёт клиента и без ключа и падает только на первом запросе — проверяем заранее."""
+    if isinstance(client, anthropic.Anthropic) and not (client.api_key or client.auth_token or client.credentials):
+        raise ConfigError("Нет ключа Claude API: задайте ANTHROPIC_API_KEY или выполните `ant auth login`. "
+                          "Без облака можно запустить с --no-cloud.")
+
+
 def call_model(client, model: str, effort: str, system: str, content: list[dict], output_model: type[BaseModel]):
+    """messages.create со схемой ответа в output_config.format: usage и stop_reason доступны и тогда,
+    когда текст ответа не разбирается (refusal с текстом, обрезка по max_tokens)."""
+    schema = anthropic.transform_schema(output_model)
+    output_config = {"effort": effort, "format": {"type": "json_schema", "schema": schema}}
     kwargs = dict(model=model, max_tokens=MAX_TOKENS, system=system,
-                  messages=[{"role": "user", "content": content}], output_format=output_model,
-                  output_config={"effort": effort})
+                  messages=[{"role": "user", "content": content}], output_config=output_config)
     for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
         try:
             if model in FALLBACK_MODELS:
-                return client.beta.messages.parse(**kwargs, betas=[FALLBACK_BETA], fallbacks="default")
-            return client.messages.parse(**kwargs)
+                return client.beta.messages.create(**kwargs, betas=[FALLBACK_BETA], fallbacks="default")
+            return client.messages.create(**kwargs)
         except anthropic.RateLimitError:
             # SDK уже повторил запрос; лимит организации — входные токены в минуту, ждём и пробуем снова.
             if attempt == RATE_LIMIT_ATTEMPTS:
@@ -116,9 +121,10 @@ def call_model(client, model: str, effort: str, system: str, content: list[dict]
 def image_content(group: list[Asset], preview: Callable[[Asset], bytes]) -> list[dict]:
     content = []
     for i, a in enumerate(group, 1):
+        with objc.autorelease_pool():  # превью кодируются через ImageIO в рабочих потоках
+            data = base64.standard_b64encode(preview(a)).decode()
         content.append({"type": "text", "text": f"id: p{i:02d}"})
-        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                    "data": base64.standard_b64encode(preview(a)).decode()}})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
     return content
 
 
@@ -143,20 +149,17 @@ def _clamp(v: int) -> int:
     return max(1, min(10, int(v)))
 
 
-def _unparsable(group: list[Asset], long_side: int, output_per_photo: int) -> GroupResult:
-    # Ответ оплачен, но usage недоступен (SDK упал на разборе) — учитываем оценку.
-    return GroupResult(items=[], unjudged=[a.uuid for a in group], refused=False,
-                       input_tokens=group_input_tokens([(a.width, a.height) for a in group], long_side),
-                       output_tokens=len(group) * output_per_photo)
-
-
-def _parse_group(response, group: list[Asset], convert) -> GroupResult:
+def _parse_group(response, group: list[Asset], output_model: type[BaseModel], convert) -> GroupResult:
     ids = {f"p{i:02d}": a for i, a in enumerate(group, 1)}
     usage = response.usage
     tokens = dict(input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
     if response.stop_reason == "refusal":
         return GroupResult(items=[], unjudged=[a.uuid for a in group], refused=True, **tokens)
-    parsed = response.parsed_output
+    text = "".join(block.text for block in response.content if block.type == "text")
+    try:
+        parsed = output_model.model_validate_json(text) if text else None
+    except pydantic.ValidationError:
+        parsed = None  # обрезанный или неполный ответ: группа остаётся неоценённой, usage учтён
     items, seen = [], set()
     for item in (parsed.items if parsed else []):
         a = ids.get(item.id)
@@ -168,55 +171,48 @@ def _parse_group(response, group: list[Asset], convert) -> GroupResult:
 
 
 class ScreenRunner:
-    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes], long_side: int = 1024):
+    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes]):
         self.client, self.model, self.effort, self.preview = client, model, effort, preview
-        self.long_side = long_side
 
     def run_group(self, album_title: str, themes: list[Theme], group: list[Asset]) -> GroupResult[Screening]:
         listing = "\n".join(f"{n}. {theme_text(t)}" for n, t in enumerate(themes, 1))
         content = image_content(group, self.preview)
         content.append({"type": "text", "text": f"Trip album: «{album_title}»\nThemes:\n{listing}"})
-        try:
-            response = call_model(self.client, self.model, self.effort, SCREEN_SYSTEM_PROMPT, content, ScreenOutput)
-        except pydantic.ValidationError:
-            return _unparsable(group, self.long_side, EST_OUTPUT_TOKENS_SCREEN)
+        response = call_model(self.client, self.model, self.effort, SCREEN_SYSTEM_PROMPT, content, ScreenOutput)
 
         def convert(a: Asset, item: ScreenItem) -> Screening:
             relevance: dict[str, int] = {}
             for m in item.matches:
                 if 1 <= m.theme <= len(themes):
-                    key = themes[m.theme - 1].key()
+                    key = themes[m.theme - 1].screen_key()
                     relevance[key] = max(relevance.get(key, 0), _clamp(m.relevance))
             return Screening(uuid=a.uuid, relevance=relevance, feed_score=_clamp(item.feed_score),
                              stories_score=_clamp(item.stories_score))
 
-        return _parse_group(response, group, convert)
+        return _parse_group(response, group, ScreenOutput, convert)
 
 
 class JudgeRunner:
-    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes], long_side: int = 1024):
+    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes]):
         self.client, self.model, self.effort, self.preview = client, model, effort, preview
-        self.long_side = long_side
 
     def run_group(self, theme: Theme, group: list[Asset]) -> GroupResult[Judgment]:
         content = image_content(group, self.preview)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        try:
-            response = call_model(self.client, self.model, self.effort, JUDGE_SYSTEM_PROMPT, content, JudgeOutput)
-        except pydantic.ValidationError:
-            return _unparsable(group, self.long_side, EST_OUTPUT_TOKENS_JUDGE)
+        response = call_model(self.client, self.model, self.effort, JUDGE_SYSTEM_PROMPT, content, JudgeOutput)
 
         def convert(a: Asset, item: JudgeItem) -> Judgment:
             return Judgment(uuid=a.uuid, matches_theme=bool(item.matches_theme), feed_score=_clamp(item.feed_score),
                             stories_score=_clamp(item.stories_score), reason=item.reason.strip())
 
-        return _parse_group(response, group, convert)
+        return _parse_group(response, group, JudgeOutput, convert)
 
 
 def _run_groups(groups: list[list[Asset]], call: Callable[[list[Asset]], GroupResult],
                 record: Callable[[GroupResult], None], cfg: CloudCfg) -> None:
-    """До MAX_PARALLEL_REQUESTS запросов сразу. После ошибки новые группы не отправляются, но уже
-    выполненные записываются (они оплачены); затем ошибка поднимается."""
+    """До MAX_PARALLEL_REQUESTS запросов сразу. Ответ записывается в кэш и расход прямо в рабочем потоке —
+    оплаченная группа не теряется ни при ошибке другой группы, ни при Ctrl+C. После ошибки новые группы
+    не отправляются, уже начатые доделываются; затем ошибка поднимается."""
     for g in groups:
         tokens = group_input_tokens([(a.width, a.height) for a in g], cfg.preview_long_side_px)
         if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
@@ -232,14 +228,14 @@ def _run_groups(groups: list[list[Asset]], call: Callable[[list[Asset]], GroupRe
                 g = next(pending, None)
                 if g is None:
                     return
-                running.add(pool.submit(call, g))
+                running.add(pool.submit(lambda group: record(call(group)), g))
 
         fill()
         while running:
             done, running = wait(running, return_when=FIRST_COMPLETED)
             for f in done:
                 try:
-                    record(f.result())
+                    f.result()
                 except Exception as e:  # noqa: BLE001 — первая ошибка поднимается после уже начатых групп
                     error = error or e
             fill()
@@ -251,15 +247,17 @@ def _run_stage(todo: list[Asset], groups: list[list[Asset]], cached: dict, call,
                cache: Cache, cfg: CloudCfg, album_uuid: str) -> StageOutcome:
     price = price_for(cfg, model)
     outcome = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0, from_cache=len(cached))
+    lock = threading.Lock()
 
-    def record(result: GroupResult) -> None:
+    def record(result: GroupResult) -> None:  # вызывается из рабочих потоков
         put(result.items)
         usd = usage_usd(result.input_tokens, result.output_tokens, price)
         cache.add_spend(album_uuid, model, usd)
-        outcome.usd += usd
-        outcome.results.update({x.uuid: x for x in result.items})
-        outcome.unjudged.extend(result.unjudged)
-        outcome.refused_groups += int(result.refused)
+        with lock:
+            outcome.usd += usd
+            outcome.results.update({x.uuid: x for x in result.items})
+            outcome.unjudged.extend(result.unjudged)
+            outcome.refused_groups += int(result.refused)
 
     _run_groups(groups, call, record, cfg)
     return outcome

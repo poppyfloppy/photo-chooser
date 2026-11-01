@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import anthropic
+import objc
 
 from photo_chooser import images
 from photo_chooser.analysis.dedup import cluster, representatives
@@ -17,7 +18,14 @@ from photo_chooser.config import AppConfig, Theme, TripConfig, themes_key
 from photo_chooser.export import Assembled, assemble, ensure_outside_library, export_asset, new_run_dir, safe_name
 from photo_chooser.judge.cost import check_budget, estimate_run_usd, price_for
 from photo_chooser.judge.prompts import JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
-from photo_chooser.judge.stages import JudgeRunner, ScreenRunner, StageOutcome, run_judge, run_screen
+from photo_chooser.judge.stages import (
+    JudgeRunner,
+    ScreenRunner,
+    StageOutcome,
+    check_credentials,
+    run_judge,
+    run_screen,
+)
 from photo_chooser.library.base import PhotosLibrary
 from photo_chooser.models import AlbumRef, Asset, LocalFeatures, Screening
 from photo_chooser.report import ReportHeader, ThemeStats, write_report
@@ -80,18 +88,18 @@ def prepare_album(library: PhotosLibrary, cache: Cache, album: AlbumRef, cfg: Ap
     for i, a in enumerate(assets, 1):
         if i % PROGRESS_EVERY == 0 or i == len(assets):
             log(f"Превью и локальные признаки: {i}/{len(assets)}")
-        path = library.preview(a, long_side)
-        if path is None:
+        with objc.autorelease_pool():  # без пула объекты PhotoKit/Vision/ImageIO копятся до конца цикла
+            path = library.preview(a, long_side)
+            f = cache.get_features(a.uuid) if path is not None else None
+            if path is not None and f is None:
+                try:
+                    f = compute_features(a.uuid, path, long_side)
+                    cache.put_features(f)
+                except Exception:  # noqa: BLE001 — нечитаемое превью равносильно его отсутствию
+                    f = None
+        if f is None:
             no_preview.append(a.uuid)
             continue
-        f = cache.get_features(a.uuid)
-        if f is None:
-            try:
-                f = compute_features(a.uuid, path, long_side)
-            except Exception:  # noqa: BLE001 — нечитаемое превью равносильно его отсутствию
-                no_preview.append(a.uuid)
-                continue
-            cache.put_features(f)
         previews[a.uuid], features[a.uuid] = path, f
 
     analysed = [a for a in assets if a.uuid in features]
@@ -107,9 +115,9 @@ def prepare_album(library: PhotosLibrary, cache: Cache, album: AlbumRef, cfg: Ap
 
 
 def _screen_scope(trip: TripConfig, theme_assets: dict[str, list[Asset]], pool: list[Asset]) -> list[Asset]:
-    """Снимки для первой ступени: прошедшие интервал хотя бы одной темы с query (тема без интервала — весь пул)."""
-    wanted = {a.uuid for t in trip.query_themes for a in theme_assets[t.key()]}
-    return [a for a in pool if a.uuid in wanted]
+    """Первая ступень идёт по всему пулу (FR-3 п.5) — черновые оценки нужны и темам-интервалам. Если ни у одной
+    темы с query нет снимков в интервале, первая ступень не нужна."""
+    return list(pool) if any(theme_assets[t.key()] for t in trip.query_themes) else []
 
 
 def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets: dict[str, list[Asset]],
@@ -153,6 +161,10 @@ def _theme_dir(run_dir: Path, theme: Theme) -> Path:
 def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibrary, cache: Cache,
         client_factory: Callable[[], object], now: datetime, log: Callable[[str], None] = _no_log) -> RunResult:
     ensure_outside_library(cfg.output_dir)
+    client = None
+    if not opts.no_cloud and not opts.dry_run:
+        client = client_factory()
+        check_credentials(client)  # до долгого чтения превью
     album = library.find_album(trip.album)
     log(f"Альбом «{album.title}»: {album.count} фото")
     state = prepare_album(library, cache, album, cfg, log)
@@ -175,13 +187,11 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
     def preview(a: Asset) -> bytes:
         return images.jpeg_bytes(state.previews[a.uuid], long_side)
 
-    client = None
     screenings: dict[str, Screening] = {}
     screen: StageOutcome | None = None
     if not opts.no_cloud and trip.query_themes and screen_scope:
-        client = client_factory()
         log(f"Первая ступень ({screen_model}): {len(screen_scope)} снимков")
-        runner = ScreenRunner(client, screen_model, cfg.cloud.effort, preview, long_side)
+        runner = ScreenRunner(client, screen_model, cfg.cloud.effort, preview)
         # Ошибка здесь останавливает запуск: без первой ступени темы с query не обработать.
         screen = run_screen(runner, cache, album.title, album.uuid, trip.query_themes, screen_scope, cfg.cloud)
         screenings = screen.results
@@ -199,7 +209,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             error = None
             th = cfg.thresholds
             matched = len(assets) if t.interval_only else sum(
-                1 for a in assets if a.uuid in screenings and screenings[a.uuid].relevance.get(t.key(), 0)
+                1 for a in assets if a.uuid in screenings and screenings[a.uuid].relevance.get(t.screen_key(), 0)
                 >= th.min_theme_relevance)
             if opts.no_cloud:
                 if t.query:
@@ -213,12 +223,13 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 if cands:
                     try:
                         if judge_runner is None:
-                            client = client or client_factory()
-                            judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview, long_side)
+                            judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview)
                         order = {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0) / 10
                                  for a in cands}
                         judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid)
                         pools = pools_from_judgments(cands, judge.results, state.quality, th, t.interval_only)
+                    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
+                        raise  # ключ не подходит — другие темы упадут так же
                     except anthropic.APIError as e:
                         error = f"{type(e).__name__}: {e}"
                         warnings.append(f"Тема не обработана: ошибка Claude API ({error}). Повторный запуск "

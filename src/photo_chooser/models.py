@@ -39,7 +39,7 @@ class LocalFeatures:
 
 @dataclass(frozen=True)
 class Screening:
-    """Результат первой ступени: релевантность по ключам тем (Theme.key()) и черновые оценки."""
+    """Результат первой ступени: релевантность по ключам тем (Theme.screen_key()) и черновые оценки."""
 
     uuid: str
     relevance: dict[str, int] = field(hash=False)

@@ -65,6 +65,10 @@ class Theme(_Strict):
     def interval_only(self) -> bool:
         return self.has_interval and self.query is None
 
+    def screen_key(self) -> str:
+        """Ключ темы в оценках первой ступени: модель видит только name и query, интервал на них не влияет."""
+        return _hash16(f"{self.name}|{self.query or ''}")
+
     def key(self) -> str:
         parts = [self.name, self.query or "",
                  self.start.isoformat() if self.start else "",

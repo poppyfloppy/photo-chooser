@@ -35,7 +35,7 @@ def in_interval(asset: Asset, theme: Theme, tz: ZoneInfo | None) -> bool:
 
 def screen_candidates(assets: list[Asset], screenings: dict[str, Screening], quality: dict[str, float],
                       theme: Theme, min_relevance: int, limit: int) -> list[Asset]:
-    key = theme.key()
+    key = theme.screen_key()
 
     def relevance(a: Asset) -> int:
         s = screenings.get(a.uuid)

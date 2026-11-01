@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
 
+import anthropic
 import pytest
 from typer.testing import CliRunner
 
 from conftest import make_asset
-from fakes import FakeLibrary
+from fakes import FakeClient, FakeLibrary
 from imaging import save_jpeg, varied_scene
 from photo_chooser import cli
 from photo_chooser.cache import Cache
@@ -26,10 +27,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "make_library", lambda: library)
     monkeypatch.setattr(cli, "make_cache", lambda: cache)
 
-    def no_client():
+    def no_calls(n, kwargs):
         raise AssertionError("Claude не должен вызываться")
 
-    monkeypatch.setattr(cli, "make_client", no_client)
+    monkeypatch.setattr(cli, "make_client", lambda: FakeClient(no_calls))
     return tmp_path, library, cache
 
 
@@ -82,6 +83,16 @@ def test_photos_access_error_exit_5_mentions_settings(env, monkeypatch):
     result = runner.invoke(cli.app, ["albums"])
     assert result.exit_code == 5
     assert "System Settings → Privacy & Security → Photos" in result.output
+
+
+def test_missing_api_key_exit_2_with_hint(env, monkeypatch):
+    monkeypatch.setattr(cli, "make_client", lambda: anthropic.Anthropic(api_key=None, auth_token=None))
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(env[0] / "home"))
+    result = runner.invoke(cli.app, ["run", "--album", "Египет 2026", "--theme", "Гиза", "--query", "пирамиды"])
+    assert result.exit_code == 2
+    assert "ANTHROPIC_API_KEY" in result.output and "--no-cloud" in result.output
 
 
 def test_albums_lists_titles_and_counts(env):

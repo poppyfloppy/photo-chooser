@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import objc
+
 from photo_chooser import images
 from photo_chooser.analysis import live
 from photo_chooser.config import AppConfig, ConfigError
@@ -131,7 +133,8 @@ def export_asset(library: PhotosLibrary, scored: Scored, list_name: str, rank: i
     frame = None
     if asset.is_live:
         try:
-            frame = _live_frame(library, asset, original, work, cfg)
+            with objc.autorelease_pool():
+                frame = _live_frame(library, asset, original, work, cfg)
         except DownloadError:
             notes.append(NOTE_LIVE_VIDEO_FAILED)
         except Exception:  # noqa: BLE001 — сбой разбора видео не должен ронять экспорт

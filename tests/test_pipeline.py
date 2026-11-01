@@ -1,13 +1,17 @@
 import re
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import anthropic
 import pytest
 
 from conftest import make_asset
-from fakes import FakeClient, FakeLibrary, api_error, fake_response, ids_in, last_text
+from fakes import FakeClient, FakeLibrary, api_error, auth_error, fake_response, ids_in, last_text, output_model_of
 from imaging import blurred, save_jpeg, varied_scene
 from photo_chooser.cache import Cache
-from photo_chooser.config import AppConfig, ShortlistCfg, Theme, TripConfig
+from photo_chooser.config import AppConfig, ConfigError, ShortlistCfg, Theme, TripConfig
 from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice
 from photo_chooser.judge.stages import JudgeItem, JudgeOutput, ScreenItem, ScreenMatch, ScreenOutput
 from photo_chooser.models import AlbumRef
@@ -74,7 +78,7 @@ def handler(match=True, fail_theme=None):
     def h(n, kw):
         content = kw["messages"][0]["content"]
         ids = ids_in(content)
-        if kw["output_format"] is ScreenOutput:
+        if output_model_of(kw) is ScreenOutput:
             n_themes = len(re.findall(r"^\d+\. ", last_text(content), flags=re.M))
             matches = [ScreenMatch(theme=t, relevance=8) for t in range(1, n_themes + 1)] if match else []
             return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches, feed_score=6, stories_score=5)
@@ -273,3 +277,88 @@ def test_theme_dirs_with_unsafe_names(tmp_path):
     dirs = sorted(p.name for p in result.run_dir.iterdir())
     assert dirs == ["Гиза_Каир_ день 1 🐪", "Гиза_Каир_ день 1 🐪_2"]
     assert all(o.report_path.exists() for o in result.themes)
+
+
+def test_editing_theme_interval_keeps_stage1_relevance(tmp_path):
+    album = Album(tmp_path, n=6)  # 08:00–08:10 по Каиру
+    cache, cfg = Cache(tmp_path / "c.sqlite"), _cfg(tmp_path)
+    first = Theme(name="Гиза", query="пирамиды", start=datetime(2026, 3, 14, 7, 0), end=datetime(2026, 3, 14, 9, 0))
+    _run(album, _trip(first), cfg, cache)
+    edited = Theme(name="Гиза", query="пирамиды", start=datetime(2026, 3, 14, 7, 30), end=datetime(2026, 3, 14, 9, 0))
+    result, client = _run(album, _trip(edited), cfg, cache)
+    assert client.calls_for(ScreenOutput) == []  # набор тем тот же — первая ступень из кэша
+    assert len(client.calls_for(JudgeOutput)) == 1  # ключ второй ступени включает интервал (FR-9.3)
+    assert len(_files(result.run_dir / "Гиза" / "feed")) == 3
+    query_only = Theme(name="Гиза", query="пирамиды")
+    result, _ = _run(album, _trip(query_only), cfg, cache)
+    assert len(_files(result.run_dir / "Гиза" / "feed")) == 3
+
+
+def test_screen_covers_whole_pool_when_any_query_theme_in_scope(tmp_path):
+    # FR-3 п.5: первая ступень — по всем снимкам после отсева; черновые оценки нужны и темам-интервалам
+    album = Album(tmp_path, n=6)
+    early = Theme(name="Утро", query="пирамиды", start=datetime(2026, 3, 14, 8, 0), end=datetime(2026, 3, 14, 8, 3))
+    result, client = _run(album, _trip(early, DAY), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"))
+    screen_calls = client.calls_for(ScreenOutput)
+    assert len(screen_calls) == 1 and len(ids_in(screen_calls[0]["messages"][0]["content"])) == 6
+    report = result.themes[0].report_path.read_text(encoding="utf-8")
+    assert "Отправлено на первую ступень (общая на запуск): 6" in report
+
+
+def test_missing_api_key_stops_before_previews(tmp_path, monkeypatch):
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    album = Album(tmp_path, n=3)
+    with pytest.raises(ConfigError) as e:
+        run(_trip(GIZA), _cfg(tmp_path), RunOptions(), album.library, Cache(tmp_path / "c.sqlite"),
+            lambda: anthropic.Anthropic(), NOW)
+    assert "ANTHROPIC_API_KEY" in str(e.value)
+    assert album.library.preview_requests == []  # до долгого чтения превью
+    result = run(_trip(GIZA), _cfg(tmp_path), RunOptions(dry_run=True), album.library, Cache(tmp_path / "c.sqlite"),
+                 lambda: anthropic.Anthropic(), NOW)
+    assert result.estimate_usd > 0  # --dry-run ключа не требует
+
+
+def test_auth_error_in_judge_stops_run(tmp_path):
+    album = Album(tmp_path, n=3)
+    ok = handler()
+    client = FakeClient(lambda n, kw: auth_error() if output_model_of(kw) is JudgeOutput else ok(n, kw))
+    with pytest.raises(anthropic.AuthenticationError):
+        _run(album, _trip(GIZA, NILE), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
+
+
+MEMORY_PROBE = """
+import resource, sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from conftest import make_asset
+from fakes import FakeLibrary
+from imaging import save_jpeg, varied_scene
+from photo_chooser.cache import Cache
+from photo_chooser.config import AppConfig
+from photo_chooser.models import AlbumRef
+from photo_chooser.pipeline import prepare_album
+
+tmp = Path(sys.argv[1])
+t0 = datetime(2026, 3, 14, 6, 0, tzinfo=UTC)
+assets, previews = [], {}
+for i in range(120):
+    a = make_asset(uuid=f"M{i:03d}", taken_at=t0 + timedelta(minutes=2 * i))
+    assets.append(a)
+    previews[a.uuid] = save_jpeg(varied_scene(i, (1024, 768)), tmp / f"{i}.jpg")
+lib = FakeLibrary([AlbumRef("A", "A", 120)], {"A": assets}, previews)
+base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+prepare_album(lib, Cache(tmp / "c.sqlite"), lib.find_album("A"), AppConfig())
+print((resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - base) // (1024 * 1024))
+"""
+
+
+def test_prepare_album_memory_stays_flat(tmp_path):
+    # Vision/ImageIO в цикле без autorelease pool копят объекты: ~5 МБ на снимок, альбом в 2500 фото — гигабайты
+    tests_dir = str(Path(__file__).parent)
+    out = subprocess.run([sys.executable, "-c", MEMORY_PROBE, str(tmp_path), tests_dir], capture_output=True,
+                         text=True, check=True)
+    growth_mb = int(out.stdout.strip().splitlines()[-1])
+    assert growth_mb < 250, f"пиковая память выросла на {growth_mb} МБ за 120 превью"

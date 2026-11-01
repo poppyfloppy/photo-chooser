@@ -43,7 +43,7 @@ def test_in_interval_without_interval_true():
 
 def test_screen_candidates_relevance_threshold():
     a4, a5, none = make_asset(), make_asset(), make_asset()
-    screenings = {a4.uuid: _s(a4, {GIZA.key(): 4}), a5.uuid: _s(a5, {GIZA.key(): 5}),
+    screenings = {a4.uuid: _s(a4, {GIZA.screen_key(): 4}), a5.uuid: _s(a5, {GIZA.screen_key(): 5}),
                   none.uuid: _s(none, {"other-theme": 9})}
     got = screen_candidates([a4, a5, none], screenings, {}, GIZA, min_relevance=5, limit=100)
     assert got == [a5]
@@ -51,7 +51,7 @@ def test_screen_candidates_relevance_threshold():
 
 def test_screen_candidates_order_and_limit():
     a, b, c, d = (make_asset() for _ in range(4))
-    k = GIZA.key()
+    k = GIZA.screen_key()
     screenings = {a.uuid: _s(a, {k: 6}, feed=9, stories=2),
                   b.uuid: _s(b, {k: 9}, feed=3, stories=3),
                   c.uuid: _s(c, {k: 6}, feed=4, stories=9),
@@ -60,6 +60,15 @@ def test_screen_candidates_order_and_limit():
     got = screen_candidates([a, b, c, d], screenings, quality, GIZA, min_relevance=5, limit=3)
     # b — самая высокая релевантность; c (9, q .9) > d (9, q .5) > a (9, q .2)
     assert got == [b, c, d]
+
+
+def test_screen_candidates_relevance_ignores_theme_interval():
+    # первая ступень оценивает тему по name+query; интервал темы на её ключ не влияет
+    a = make_asset()
+    with_interval = Theme(name="Гиза", query="пирамиды", start=datetime(2026, 3, 14, 5, 0),
+                          end=datetime(2026, 3, 14, 12, 0))
+    screenings = {a.uuid: _s(a, {GIZA.screen_key(): 8})}
+    assert screen_candidates([a], screenings, {}, with_interval, min_relevance=5, limit=100) == [a]
 
 
 def test_screen_candidates_interval_only_includes_unscreened():

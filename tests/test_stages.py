@@ -6,7 +6,7 @@ import anthropic
 import pytest
 
 from conftest import make_asset
-from fakes import FakeClient, api_error, fake_response, ids_in, last_text, rate_limit_error
+from fakes import FakeClient, api_error, fake_response, ids_in, last_text, output_model_of, rate_limit_error
 from photo_chooser.cache import Cache
 from photo_chooser.config import CloudCfg, Theme, themes_key
 from photo_chooser.judge import stages
@@ -84,7 +84,7 @@ def test_screen_maps_theme_numbers_to_keys():
     a = _assets(1)
     result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, a)
     assert result.items[0].uuid == "U000"
-    assert result.items[0].relevance == {THEMES[1].key(): 8}
+    assert result.items[0].relevance == {THEMES[1].screen_key(): 8}
     assert (result.items[0].feed_score, result.items[0].stories_score) == (6, 5)
 
 
@@ -92,7 +92,7 @@ def test_screen_drops_unknown_theme_numbers_and_clamps():
     matches = [ScreenMatch(theme=9, relevance=7), ScreenMatch(theme=1, relevance=12), ScreenMatch(theme=0, relevance=6)]
     client = FakeClient(screen_handler(matches=lambda i: matches, feed=0, stories=15))
     result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(1))
-    assert result.items[0].relevance == {THEMES[0].key(): 10}
+    assert result.items[0].relevance == {THEMES[0].screen_key(): 10}
     assert (result.items[0].feed_score, result.items[0].stories_score) == (1, 10)
 
 
@@ -239,14 +239,15 @@ def test_request_shape():
     assert call["_beta"] is False
     assert call["model"] == HAIKU and call["max_tokens"] == 16000
     assert call["system"] == SCREEN_SYSTEM_PROMPT
-    assert call["output_format"] is ScreenOutput
-    assert call["output_config"] == {"effort": "low"}
+    assert call["output_config"]["effort"] == "low"
+    assert call["output_config"]["format"]["type"] == "json_schema"
+    assert output_model_of(call) is ScreenOutput
     assert [m["role"] for m in call["messages"]] == ["user"]
-    assert not {"thinking", "betas", "fallbacks"} & set(call)
+    assert not {"thinking", "betas", "fallbacks", "output_format"} & set(call)
     judge_client = FakeClient(judge_handler())
     JudgeRunner(judge_client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(1))
     assert judge_client.calls[0]["system"] == JUDGE_SYSTEM_PROMPT
-    assert judge_client.calls[0]["output_format"] is JudgeOutput
+    assert output_model_of(judge_client.calls[0]) is JudgeOutput
 
 
 @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5"])
@@ -269,21 +270,36 @@ def test_group_over_haiku_price_threshold_rejected(tmp_path):
     assert client.calls == []
 
 
-def test_unparsable_response_marks_group_unjudged_and_counts_estimate(tmp_path):
-    # SDK parse бросает ValidationError, если текст ответа не JSON (refusal с текстом, обрезка по max_tokens)
-    import pydantic
-
-    def handler(n, kwargs):
-        try:
-            JudgeOutput.model_validate_json('{"items": [')
-        except pydantic.ValidationError as e:
-            return e
-
+def test_truncated_response_records_actual_usage(tmp_path):
+    # ответ обрезан по max_tokens: JSON неполный, но usage оплачен полностью
+    client = FakeClient(lambda n, kw: fake_response(text='{"items": [{"id": "p01", "matc', stop_reason="max_tokens",
+                                                     input_tokens=30_000, output_tokens=16_000))
     cache = Cache(tmp_path / "c.sqlite")
-    client = FakeClient(handler)
-    group = _assets(2)  # 4032×3024 → 1049 токенов на превью 1024
-    outcome = run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], group, {}, CloudCfg(),
+    outcome = run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], _assets(2), {}, CloudCfg(),
                         "album-1")
     assert outcome.results == {} and sorted(outcome.unjudged) == ["U000", "U001"]
-    expected = (2 * 1049 + 500) * 0.10 / 1e6 + 2 * 80 * 0.50 / 1e6
-    assert cache.album_spend("album-1") == pytest.approx(expected)
+    assert cache.album_spend("album-1") == pytest.approx(30_000 * 0.10 / 1e6 + 16_000 * 0.50 / 1e6)
+
+
+def test_refusal_with_text_is_refused():
+    client = FakeClient(lambda n, kw: fake_response(text="I can't help with that.", stop_reason="refusal"))
+    result = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(1))
+    assert result.refused and result.unjudged == ["U000"]
+
+
+def test_interrupt_keeps_completed_groups(tmp_path, monkeypatch):
+    # Ctrl+C в главном потоке, пока группы в работе: оплаченные ответы всё равно записываются
+    real_wait = stages.wait
+
+    def interrupted_wait(fs, return_when=None):
+        real_wait(fs)  # все запущенные группы завершились
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(stages, "wait", interrupted_wait)
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(60)
+    client = FakeClient(judge_handler())
+    with pytest.raises(KeyboardInterrupt):
+        run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    assert len(client.calls) == 3
+    assert cache.album_spend("album-1") == pytest.approx(3 * GROUP_USD)
+    assert all(cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, JUDGE_PROMPT_VERSION) for a in assets)

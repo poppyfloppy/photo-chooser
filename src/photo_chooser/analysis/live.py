@@ -5,6 +5,7 @@ from pathlib import Path
 import AVFoundation
 import CoreMedia
 import Foundation
+import objc
 import Quartz
 
 from photo_chooser import images, vision
@@ -40,7 +41,8 @@ def frame_scores(imgs: list, long_side: int) -> list[float]:
     top = max(sharp, default=0.0)
     scores = []
     for img, s in zip(scaled, sharp):
-        v = vision.analyze(img)
+        with objc.autorelease_pool():
+            v = vision.analyze(img)
         parts = {"aesthetic": v.aesthetic, "sharpness": s / top if top > 0 else 0.0, "face": v.face_quality}
         present = {k: x for k, x in parts.items() if x is not None}
         total = sum(FRAME_WEIGHTS[k] for k in present)
