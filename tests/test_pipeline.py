@@ -87,7 +87,7 @@ def handler(match=True, fail_theme=None):
         if fail_theme and f"«{fail_theme}" in last_text(content):
             return api_error()
         return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, feed_score=7, stories_score=5,
-                                                          reason="подходит") for i in ids]))
+                                                          reason="подходит", crop_feed="", crop_stories="") for i in ids]))
     return h
 
 
@@ -403,7 +403,7 @@ def test_run_with_style_sends_profile_and_marks_header(tmp_path):
     assert "Мягкий тёплый свет." not in client.calls_for(ScreenOutput)[0]["system"]
     report = result.themes[0].report_path.read_text(encoding="utf-8")
     assert "- Стиль: style.md от " in report and "скриншотов в запросе: 1" in report
-    assert "judge-2/style-" in report
+    assert f"{JUDGE_PROMPT_VERSION}/style-" in report
 
 
 def test_run_without_profile_warns(tmp_path):

@@ -85,13 +85,14 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, assembled: Asse
         lines.append("")
 
     lines += ["## Шорт-лист", "",
-              "| Ранг | Файл(ы) | Список | Оценка | Ориентация | Пометки | Причина |",
-              "|---|---|---|---|---|---|---|"]
+              "| Ранг | Файл(ы) | Список | Оценка | Ориентация | Пометки | Причина | Кадрирование |",
+              "|---|---|---|---|---|---|---|---|"]
     for item in assembled.feed + assembled.stories:
         lines.append(f"| {item.rank} | {', '.join(item.files)} | {LIST_TITLES[item.list_name]} | {_score(item.score)} "
-                     f"| {_orientation(item)} | {_cell('; '.join(item.notes))} | {_cell(item.reason)} |")
+                     f"| {_orientation(item)} | {_cell('; '.join(item.notes))} | {_cell(item.reason)} "
+                     f"| {_cell(item.crop) or '—'} |")
     if not assembled.feed and not assembled.stories:
-        lines.append("| — | — | — | — | — | — | подходящих кадров нет |")
+        lines.append("| — | — | — | — | — | — | подходящих кадров нет | — |")
     lines.append("")
 
     shortfall = [f"лента {assembled.shortfall_feed}"] if assembled.shortfall_feed else []

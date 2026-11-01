@@ -63,7 +63,7 @@ def _fake_export(failing=()):
         if scored.asset.uuid in failing:
             raise DownloadError(scored.asset.uuid, "3 попытки не удались: network")
         return ExportedItem(list_name, rank, scored.asset, [f"{rank:02d}_{scored.asset.filename}"], scored.score,
-                            scored.reason, [])
+                            scored.reason, [], scored.crop)
 
     return try_export, calls
 
@@ -166,7 +166,7 @@ def test_report_contains_header_table_and_summary(tmp_path):
     failed = make_asset(filename="IMG_3.HEIC")
     try_export, _ = _fake_export(failing={failed.uuid})
     pools = Pools(feed=[Scored(v, 9, "Пирамиды | на закате"), Scored(failed, 8, "x")],
-                  stories=[Scored(h, 0.61, "эстетика 0.61 · резкость 0.50")])
+                  stories=[Scored(h, 0.61, "эстетика 0.61 · резкость 0.50", crop="до 9:16: столб справа")])
     assembled = assemble(pools, 5, 3, try_export)
     assembled.feed[0].notes.append("кадр из Live Photo, разрешение ниже оригинала")
     theme = Theme(name="Гиза", query="пирамиды")
@@ -178,10 +178,11 @@ def test_report_contains_header_table_and_summary(tmp_path):
     assert "# Гиза" in text and "Egypt.26" in text
     assert "без облака" in text
     assert "Режим без облака: query темы не учитывается" in text
-    assert "| Ранг | Файл(ы) | Список | Оценка | Ориентация | Пометки | Причина |" in text
+    assert "| Ранг | Файл(ы) | Список | Оценка | Ориентация | Пометки | Причина | Кадрирование |" in text
     assert "| 1 | 01_IMG_1.HEIC | лента | 9 | вертикальная | кадр из Live Photo, разрешение ниже оригинала | " \
-           "Пирамиды \\| на закате |" in text
+           "Пирамиды \\| на закате | — |" in text
     assert "| 1 | 01_IMG_2.HEIC | stories | 0.61 | горизонтальная |" in text
+    assert text.count("до 9:16: столб справа |") == 1
     assert "Недобор: лента 4, stories 2" in text
     assert "первая ступень $0.0123" in text and "вторая ступень $0.0045" in text
     assert "по альбому $0.42" in text

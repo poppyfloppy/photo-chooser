@@ -63,6 +63,7 @@ class ExportedItem:
     score: float
     reason: str
     notes: list[str] = field(default_factory=list)
+    crop: str = ""
 
 
 @dataclass
@@ -146,4 +147,4 @@ def export_asset(library: PhotosLibrary, scored: Scored, list_name: str, rank: i
     else:
         name = f"{rank:02d}_{original.name}"
         shutil.copy2(original, dest_dir / name)
-    return ExportedItem(list_name, rank, asset, [name], scored.score, scored.reason, notes)
+    return ExportedItem(list_name, rank, asset, [name], scored.score, scored.reason, notes, scored.crop)

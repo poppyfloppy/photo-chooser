@@ -159,3 +159,14 @@ def test_local_pools_reason_format():
     by = {s.asset.uuid: s.reason for s in pools.feed}
     assert by[a.uuid] == "эстетика 0.72 · резкость 1.00 · лица 0.65"  # резкость — ранг среди кандидатов
     assert by[b.uuid] == "резкость 0.00"
+
+
+
+def test_pools_carry_crop_for_their_list():
+    a = make_asset(width=4032, height=3024)
+    j = Judgment(uuid=a.uuid, matches_theme=True, feed_score=8, stories_score=6, reason="r",
+                 crop_feed="до 4:5: пирамида справа", crop_stories="до 9:16: пирамида по центру")
+    pools = pools_from_judgments([a], {a.uuid: j}, {}, TH, interval_only=False)
+    assert pools.feed[0].crop == "до 4:5: пирамида справа"
+    assert pools.stories[0].crop == "до 9:16: пирамида по центру"
+    assert pools_local([a], {a.uuid: 0.5}, {}).feed[0].crop == ""
