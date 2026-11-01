@@ -1,16 +1,18 @@
 """Стиль страницы Instagram (SPEC FR-11): образцы из Photos, построение профиля style.md."""
 
 import base64
+import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 
+from photo_chooser import images
 from photo_chooser.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, StyleCfg
 from photo_chooser.judge.cost import PROMPT_OVERHEAD_TOKENS, image_tokens, price_for, usage_usd
 from photo_chooser.judge.prompts import STYLE_SYSTEM_PROMPT
 from photo_chooser.judge.stages import call_model
-from photo_chooser.library.base import AlbumAmbiguous, PhotosLibrary, resolve_album
+from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosLibrary, resolve_album
 from photo_chooser.models import AlbumRef, Asset
 
 DEFAULT_STYLE_PATH = DEFAULT_CONFIG_PATH.parent / "style.md"
@@ -103,3 +105,50 @@ def save_profile(path: Path, text: str) -> None:
     if path.exists():
         path.replace(path.with_name("style.prev.md"))
     path.write_text(text.strip() + "\n", encoding="utf-8")
+
+
+# --- профиль на второй ступени (FR-11.4, FR-11.5) ----------------------------------------------
+
+
+@dataclass(frozen=True)
+class StyleContext:
+    text: str
+    references: list[bytes]  # JPEG скриншотов-образцов при SCREENSHOT_LONG_SIDE
+    fingerprint: str  # 8 hex: текст профиля и uuid выбранных скриншотов — часть ключа кэша второй ступени
+    created_at: datetime
+    extra_tokens: int  # входные токены профиля и образцов в каждой группе второй ступени
+    warnings: list[str] = field(default_factory=list)
+
+
+def load_style(path: Path, library: PhotosLibrary, cfg: AppConfig) -> StyleContext | None:
+    """Профиль и первые reference_images скриншотов в порядке альбома; нет файла или он пуст — None."""
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return None
+    sc, warnings = cfg.style, []
+    shots: list[Asset] = []
+    if sc.reference_images and sc.screenshots_album:
+        try:
+            album = resolve_album(sc.screenshots_album, library.albums())
+            shots = library.assets(album, album_order=True)[:sc.reference_images]
+        except (AlbumNotFound, AlbumAmbiguous) as e:
+            warnings.append(f"Скриншоты-образцы не приложены: {e}")
+        else:
+            if len(shots) < sc.reference_images:
+                warnings.append(f"В альбоме «{sc.screenshots_album}» скриншотов {len(shots)} из "
+                                f"{sc.reference_images} (style.reference_images)")
+    references, used = [], []
+    for a in shots:
+        preview = library.preview(a, SCREENSHOT_LONG_SIDE)
+        if preview is None:
+            warnings.append(f"Нет превью скриншота-образца {a.filename}")
+            continue
+        references.append(images.jpeg_bytes(preview, SCREENSHOT_LONG_SIDE))
+        used.append(a)
+    fingerprint = hashlib.sha256("|".join([text] + [a.uuid for a in used]).encode("utf-8")).hexdigest()[:8]
+    extra = sum(image_tokens(a.width, a.height, SCREENSHOT_LONG_SIDE) for a in used) + len(text) // 2 + 100
+    return StyleContext(text=text, references=references, fingerprint=fingerprint,
+                        created_at=datetime.fromtimestamp(path.stat().st_mtime), extra_tokens=extra,
+                        warnings=warnings)

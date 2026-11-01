@@ -327,3 +327,64 @@ def test_screen1_cache_not_reused_after_rubric_change(tmp_path):
     run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
                CloudCfg())
     assert len(client.calls) == 1
+
+
+def _style(fp="ab12cd34", refs=(b"REF1", b"REF2")):
+    from datetime import datetime
+
+    from photo_chooser.style import StyleContext
+
+    return StyleContext(text="## Лента\nТёплый свет, минимализм.", references=list(refs), fingerprint=fp,
+                        created_at=datetime(2026, 11, 1, 18, 0), extra_tokens=3500, warnings=[])
+
+
+def test_judge_with_style_request():
+    client = FakeClient(judge_handler())
+    runner = JudgeRunner(client, HAIKU, "medium", _preview, style=_style())
+    runner.run_group(THEMES[0], _assets(2))
+    call = client.calls[0]
+    assert call["system"].startswith(JUDGE_SYSTEM_PROMPT) and "Тёплый свет, минимализм." in call["system"]
+    content = call["messages"][0]["content"]
+    assert content[0]["type"] == "text" and "Reference" in content[0]["text"]
+    assert [base64.b64decode(b["source"]["data"]) for b in content[1:3]] == [b"REF1", b"REF2"]
+    assert content[3]["text"] == "id: p01"
+    assert ids_in(content) == ["p01", "p02"] and _sent_uuids(call)[2:] == ["U000", "U001"]
+    assert runner.prompt_version == "judge-2/style-ab12cd34" and runner.extra_input_tokens == 3500
+
+
+def test_judge_cache_keyed_by_style_fingerprint(tmp_path):
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    client = FakeClient(judge_handler())
+
+    def run(style):
+        run_judge(JudgeRunner(client, HAIKU, "medium", _preview, style=style), cache, THEMES[0], assets, {},
+                  CloudCfg(), "album-1")
+
+    run(_style("aaaa1111"))
+    run(_style("aaaa1111"))
+    assert len(client.calls) == 1
+    run(_style("bbbb2222"))
+    assert len(client.calls) == 2
+
+
+def test_judge_without_style_unchanged():
+    client = FakeClient(judge_handler())
+    runner = JudgeRunner(client, HAIKU, "medium", _preview)
+    runner.run_group(THEMES[0], _assets(1))
+    assert runner.prompt_version == "judge-2" and runner.extra_input_tokens == 0
+    assert client.calls[0]["system"] == JUDGE_SYSTEM_PROMPT
+    assert client.calls[0]["messages"][0]["content"][0]["text"] == "id: p01"
+
+
+def test_style_tokens_count_toward_price_threshold(tmp_path):
+    # 80 превью ≈ 84 тыс. токенов — меньше порога; со стилем на 20 тыс. — уже больше
+    client = FakeClient(judge_handler())
+    cfg = CloudCfg(group_size=80)
+    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "a.sqlite"), THEMES[0], _assets(80),
+              {}, cfg, "album-1")
+    from dataclasses import replace
+
+    heavy = replace(_style(), extra_tokens=20_000)
+    with pytest.raises(ValueError):
+        run_judge(JudgeRunner(client, HAIKU, "medium", _preview, style=heavy), Cache(tmp_path / "b.sqlite"),
+                  THEMES[0], _assets(80), {}, cfg, "album-1")

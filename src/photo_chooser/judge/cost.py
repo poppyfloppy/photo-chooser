@@ -46,21 +46,23 @@ def group_input_tokens(sizes: list[tuple[int, int]], long_side: int) -> int:
     return sum(image_tokens(w, h, long_side) for w, h in sizes) + PROMPT_OVERHEAD_TOKENS
 
 
-def _stage_usd(n: int, cfg: CloudCfg, output_per_photo: int, price: Price) -> float:
+def _stage_usd(n: int, cfg: CloudCfg, output_per_photo: int, price: Price, extra_per_group: int = 0) -> float:
     if n <= 0:
         return 0.0
     side = cfg.preview_long_side_px
     per_image = image_tokens(side, side * 3 // 4, side)
     groups = math.ceil(n / cfg.group_size)
-    return usage_usd(n * per_image + groups * PROMPT_OVERHEAD_TOKENS, n * output_per_photo, price)
+    return usage_usd(n * per_image + groups * (PROMPT_OVERHEAD_TOKENS + extra_per_group), n * output_per_photo, price)
 
 
-def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_model: str, judge_model: str) -> float:
-    """Первая ступень — один проход по n_screen снимкам; вторая — n_judge[i] кандидатов темы i. Превью 4:3."""
+def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_model: str, judge_model: str,
+                     judge_extra_tokens: int = 0) -> float:
+    """Первая ступень — один проход по n_screen снимкам; вторая — n_judge[i] кандидатов темы i. Превью 4:3.
+    judge_extra_tokens — профиль стиля и скриншоты-образцы в каждой группе второй ступени (FR-11.6)."""
     total = _stage_usd(n_screen, cfg, EST_OUTPUT_TOKENS_SCREEN, price_for(cfg, screen_model)) if n_screen else 0.0
     if any(n > 0 for n in n_judge):
         judge_price = price_for(cfg, judge_model)
-        total += sum(_stage_usd(n, cfg, EST_OUTPUT_TOKENS_JUDGE, judge_price) for n in n_judge)
+        total += sum(_stage_usd(n, cfg, EST_OUTPUT_TOKENS_JUDGE, judge_price, judge_extra_tokens) for n in n_judge)
     return total
 
 

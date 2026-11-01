@@ -6,6 +6,7 @@ import pytest
 
 from conftest import make_asset
 from fakes import FakeClient, FakeLibrary, fake_response
+from imaging import save_jpeg, varied_scene
 from photo_chooser import style
 from photo_chooser.config import AppConfig, ConfigError, StyleCfg
 from photo_chooser.library.base import AlbumNotFound
@@ -139,3 +140,58 @@ def test_estimate_profile_usd():
     shots = [make_asset(width=1179, height=2556, is_screenshot=True) for _ in range(2)]
     expected = (40 * 1049 + 2 * 1512 + 500) * 4.00 / 1e6 + 1500 * 20.00 / 1e6
     assert style.estimate_profile_usd(posts, shots, AppConfig()) == pytest.approx(expected)
+
+
+# --- профиль на второй ступени ---------------------------------------------------------------
+
+
+def _shots_library(tmp_path, n_shots, title="Instagram style"):
+    shots = [make_asset(uuid=f"G{i}", width=1179, height=2556, is_screenshot=True) for i in range(n_shots)]
+    previews = {a.uuid: save_jpeg(varied_scene(i, (590, 1278)), tmp_path / f"g{i}.jpg") for i, a in enumerate(shots)}
+    return FakeLibrary([AlbumRef("g", title, n_shots)], {"g": shots}, previews)
+
+
+def _cfg(**style_kw):
+    return AppConfig(style=StyleCfg(albums=["Snapseed"], screenshots_album="Instagram style", **style_kw))
+
+
+def test_load_style_missing_or_blank_is_none(tmp_path):
+    lib = _shots_library(tmp_path, 2)
+    assert style.load_style(tmp_path / "style.md", lib, _cfg()) is None
+    (tmp_path / "style.md").write_text("  \n", encoding="utf-8")
+    assert style.load_style(tmp_path / "style.md", lib, _cfg()) is None
+
+
+def test_load_style_reads_profile_and_screenshots(tmp_path):
+    path = tmp_path / "style.md"
+    path.write_text("## Лента\nТёплый свет.\n", encoding="utf-8")
+    ctx = style.load_style(path, _shots_library(tmp_path, 3), _cfg())
+    assert ctx.text.startswith("## Лента") and len(ctx.references) == 2 and ctx.warnings == []
+    assert all(r[:2] == b"\xff\xd8" for r in ctx.references)
+    assert len(ctx.fingerprint) == 8
+    assert ctx.extra_tokens == 2 * 1512 + len(ctx.text) // 2 + 100
+
+
+def test_load_style_fingerprint_changes_with_text_and_screens(tmp_path):
+    path = tmp_path / "style.md"
+    path.write_text("## Лента\nА\n", encoding="utf-8")
+    lib = _shots_library(tmp_path, 3)
+    first = style.load_style(path, lib, _cfg()).fingerprint
+    assert style.load_style(path, lib, _cfg()).fingerprint == first
+    assert style.load_style(path, lib, _cfg(reference_images=1)).fingerprint != first
+    path.write_text("## Лента\nБ\n", encoding="utf-8")
+    assert style.load_style(path, lib, _cfg()).fingerprint != first
+
+
+def test_load_style_short_screenshot_album_warns(tmp_path):
+    path = tmp_path / "style.md"
+    path.write_text("## Лента\n…\n", encoding="utf-8")
+    ctx = style.load_style(path, _shots_library(tmp_path, 1), _cfg())
+    assert len(ctx.references) == 1 and len(ctx.warnings) == 1
+
+
+def test_load_style_missing_screenshot_album_warns(tmp_path):
+    path = tmp_path / "style.md"
+    path.write_text("## Лента\n…\n", encoding="utf-8")
+    ctx = style.load_style(path, _shots_library(tmp_path, 2, title="Другое"), _cfg())
+    assert ctx.references == [] and len(ctx.warnings) == 1 and "Instagram style" in ctx.warnings[0]

@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import anthropic
 import objc
@@ -26,8 +26,13 @@ from photo_chooser.judge.prompts import (
     JUDGE_SYSTEM_PROMPT,
     SCREEN_PROMPT_VERSION,
     SCREEN_SYSTEM_PROMPT,
+    STYLE_BLOCK,
+    STYLE_REFERENCE_LABEL,
 )
 from photo_chooser.models import Asset, Judgment, Screening
+
+if TYPE_CHECKING:
+    from photo_chooser.style import StyleContext
 
 MAX_TOKENS = 16000
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
@@ -194,14 +199,37 @@ class ScreenRunner:
         return _parse_group(response, group, ScreenOutput, convert)
 
 
+def judge_prompt_version(style: "StyleContext | None") -> str:
+    """Версия промпта второй ступени для ключа кэша: со стилем в неё входит отпечаток профиля (FR-9.3)."""
+    return JUDGE_PROMPT_VERSION if style is None else f"{JUDGE_PROMPT_VERSION}/style-{style.fingerprint}"
+
+
 class JudgeRunner:
-    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes]):
+    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes],
+                 style: "StyleContext | None" = None):
         self.client, self.model, self.effort, self.preview = client, model, effort, preview
+        self.style = style
+
+    @property
+    def prompt_version(self) -> str:
+        return judge_prompt_version(self.style)
+
+    @property
+    def extra_input_tokens(self) -> int:
+        return self.style.extra_tokens if self.style else 0
 
     def run_group(self, theme: Theme, group: list[Asset]) -> GroupResult[Judgment]:
-        content = image_content(group, self.preview)
+        system, content = JUDGE_SYSTEM_PROMPT, []
+        if self.style is not None:
+            system += "\n\n" + STYLE_BLOCK.format(text=self.style.text)
+            if self.style.references:
+                content.append({"type": "text", "text": STYLE_REFERENCE_LABEL})
+                content += [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                         "data": base64.standard_b64encode(ref).decode()}}
+                            for ref in self.style.references]
+        content += image_content(group, self.preview)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        response = call_model(self.client, self.model, self.effort, JUDGE_SYSTEM_PROMPT, content, JudgeOutput)
+        response = call_model(self.client, self.model, self.effort, system, content, JudgeOutput)
 
         def convert(a: Asset, item: JudgeItem) -> Judgment:
             return Judgment(uuid=a.uuid, matches_theme=bool(item.matches_theme), feed_score=_clamp(item.feed_score),
@@ -211,12 +239,12 @@ class JudgeRunner:
 
 
 def _run_groups(groups: list[list[Asset]], call: Callable[[list[Asset]], GroupResult],
-                record: Callable[[GroupResult], None], cfg: CloudCfg) -> None:
+                record: Callable[[GroupResult], None], cfg: CloudCfg, extra_tokens: int = 0) -> None:
     """До MAX_PARALLEL_REQUESTS запросов сразу. Ответ записывается в кэш и расход прямо в рабочем потоке —
     оплаченная группа не теряется ни при ошибке другой группы, ни при Ctrl+C. После ошибки новые группы
     не отправляются, уже начатые доделываются; затем ошибка поднимается."""
     for g in groups:
-        tokens = group_input_tokens([(a.width, a.height) for a in g], cfg.preview_long_side_px)
+        tokens = group_input_tokens([(a.width, a.height) for a in g], cfg.preview_long_side_px) + extra_tokens
         if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
             raise ValueError(f"Группа из {len(g)} превью ≈ {tokens} входных токенов — больше ценового порога "
                              f"{HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.group_size или preview_long_side_px.")
@@ -246,7 +274,7 @@ def _run_groups(groups: list[list[Asset]], call: Callable[[list[Asset]], GroupRe
 
 
 def _run_stage(todo: list[Asset], groups: list[list[Asset]], cached: dict, call, put, model: str,
-               cache: Cache, cfg: CloudCfg, album_uuid: str) -> StageOutcome:
+               cache: Cache, cfg: CloudCfg, album_uuid: str, extra_tokens: int = 0) -> StageOutcome:
     price = price_for(cfg, model)
     outcome = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0, from_cache=len(cached))
     lock = threading.Lock()
@@ -261,7 +289,7 @@ def _run_stage(todo: list[Asset], groups: list[list[Asset]], cached: dict, call,
             outcome.unjudged.extend(result.unjudged)
             outcome.refused_groups += int(result.refused)
 
-    _run_groups(groups, call, record, cfg)
+    _run_groups(groups, call, record, cfg, extra_tokens)
     return outcome
 
 
@@ -284,15 +312,15 @@ def run_screen(runner: ScreenRunner, cache: Cache, album_title: str, album_uuid:
 
 def run_judge(runner: JudgeRunner, cache: Cache, theme: Theme, assets: list[Asset], order: dict[str, float],
               cfg: CloudCfg, album_uuid: str) -> StageOutcome[Judgment]:
-    key = theme.key()
+    key, version = theme.key(), runner.prompt_version
     cached, todo = {}, []
     for a in assets:
-        j = cache.get_judgment(a.uuid, key, runner.model, JUDGE_PROMPT_VERSION)
+        j = cache.get_judgment(a.uuid, key, runner.model, version)
         if j is None:
             todo.append(a)
         else:
             cached[a.uuid] = j
     groups = make_groups(todo, order, cfg.group_size)
     return _run_stage(todo, groups, cached, lambda g: runner.run_group(theme, g),
-                      lambda items: cache.put_judgments(items, key, runner.model, JUDGE_PROMPT_VERSION),
-                      runner.model, cache, cfg, album_uuid)
+                      lambda items: cache.put_judgments(items, key, runner.model, version),
+                      runner.model, cache, cfg, album_uuid, runner.extra_input_tokens)

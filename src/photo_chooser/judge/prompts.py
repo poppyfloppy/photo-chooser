@@ -29,3 +29,9 @@ Write a description of the page's style in Russian, about 300 words, in Markdown
 In each section cover: processing and colour grading, light, composition and framing, typical subjects, and what never appears on the page.
 Give recent posts more weight than old ones: the style may have changed over the years.
 Describe the style only; do not describe individual photos. Output only the description."""
+
+STYLE_REFERENCE_LABEL = "Reference: screenshots of the author's Instagram page (do not score them)"
+
+STYLE_BLOCK = """Style of the author's Instagram page, written from their published posts and page screenshots (the screenshots at the start of the message show the page itself; do not score them):
+{text}
+Fit to this style — the feed section for feed_score, the stories section for stories_score — is one more criterion, as important as composition and light."""
