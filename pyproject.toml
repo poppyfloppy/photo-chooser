@@ -37,3 +37,8 @@ spike = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: читает реальную медиатеку Photos; запускает пользователь в Terminal (tests/integration/README.md)",
+    "cloud: платные вызовы Claude API",
+]
