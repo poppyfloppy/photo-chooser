@@ -122,3 +122,36 @@ def test_write_tiff_copies_date_and_gps(tmp_path):
     assert props.get(Quartz.kCGImagePropertyOrientation, 1) == 1
     with Image.open(dest) as im:
         assert im.size == (Quartz.CGImageGetWidth(frame), Quartz.CGImageGetHeight(frame))
+
+
+CONCURRENT_PROBE = """
+import sys, threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import Foundation, Quartz
+from PIL import Image
+names = ["CGImageSourceCreateWithURL", "CGImageSourceCreateThumbnailAtIndex", "CGImageDestinationCreateWithData",
+         "CGImageDestinationAddImage", "CGImageDestinationFinalize", "kCGImageSourceThumbnailMaxPixelSize"]
+from photo_chooser import images
+missing = [n for n in names if n not in vars(Quartz)] + [n for n in ["NSURL", "NSMutableData"] if n not in vars(Foundation)]
+src = Path(sys.argv[1]) / "p.jpg"
+Image.new("RGB", (64, 48), (100, 150, 200)).save(src)
+barrier = threading.Barrier(8)
+def go(_):
+    barrier.wait()
+    return len(images.jpeg_bytes(src, 32))
+with ThreadPoolExecutor(8) as pool:
+    sizes = list(pool.map(go, range(8)))
+print("missing:", ",".join(missing))
+"""
+
+
+def test_images_safe_for_concurrent_first_use(tmp_path):
+    # pyobjc подгружает функции Quartz лениво и не потокобезопасно: первая ступень, у которой признаки уже
+    # в кэше, впервые вызывала ImageIO сразу из 3 потоков → KeyError: 'CGImageSourceCreateWithURL' (Egypt.26)
+    import subprocess
+    import sys
+
+    out = subprocess.run([sys.executable, "-c", CONCURRENT_PROBE, str(tmp_path)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-500:]
+    assert out.stdout.strip().endswith("missing:"), out.stdout
