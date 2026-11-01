@@ -8,15 +8,17 @@ from pathlib import Path
 import anthropic
 import typer
 
-from photo_chooser import pipeline
+from photo_chooser import images, pipeline, style
 from photo_chooser.cache import Cache
 from photo_chooser.config import ConfigError, load_app_config, load_trip, trip_from_args
-from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice
-from photo_chooser.judge.stages import make_client
+from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice, price_for, usage_usd
+from photo_chooser.judge.stages import check_credentials, make_client
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosAccessError
 
 EXIT_ERROR, EXIT_CONFIG, EXIT_BUDGET, EXIT_ALBUM, EXIT_ACCESS = 1, 2, 3, 4, 5
 LOG_DIR = Path("~/Library/Logs/photo-chooser").expanduser()
+STYLE_PATH = style.DEFAULT_STYLE_PATH
+STYLE_SPEND_KEY = "style"  # расход команды style — отдельно от бюджетов альбомов (FR-11.6)
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Шорт-лист кадров для Instagram из альбома Photos (лента и stories).")
@@ -109,10 +111,48 @@ def run_command(
             trip = trip_from_args(album, theme, query, start, end, timezone)
         cfg = load_app_config()
         opts = pipeline.RunOptions(dry_run=dry_run, no_cloud=no_cloud, model=model, max_cost=max_cost)
-        result = pipeline.run(trip, cfg, opts, make_library(), make_cache(), make_client, datetime.now(), log=_err)
+        result = pipeline.run(trip, cfg, opts, make_library(), make_cache(), make_client, datetime.now(), log=_err,
+                              style_path=STYLE_PATH)
         failed = _print_result(result, opts, cfg.cloud.max_cost_usd_per_album if max_cost is None else max_cost)
     if failed:
         raise typer.Exit(EXIT_ERROR)
+
+
+@app.command("style")
+def style_command(
+    yes: bool = typer.Option(False, "--yes", help="Отправить без подтверждения"),
+) -> None:
+    """Построить профиль стиля страницы Instagram по образцам из Photos (style.md)."""
+    with _exit_codes():
+        cfg = load_app_config()
+        library = make_library()
+        posts, shots = style.gather_samples(library, cfg.style)
+
+        def preview(asset, side: int) -> bytes | None:
+            path = library.preview(asset, side)
+            return images.jpeg_bytes(path, side) if path else None
+
+        samples = style.load_samples(posts, shots, preview)  # до подтверждения: считаем то, что уйдёт
+        sent_posts = [s.asset for s in samples if s.kind == "post"]
+        sent_shots = [s.asset for s in samples if s.kind == "screenshot"]
+        estimate = style.estimate_profile_usd(sent_posts, sent_shots, cfg)
+        typer.echo(f"Отправить {len(samples)} изображений (постов {len(sent_posts)}, скриншотов {len(sent_shots)}) "
+                   f"модели {cfg.style.model}, ≈ ${estimate:.2f}?")
+        try:
+            confirmed = yes or typer.confirm("Продолжить?", default=False)
+        except typer.Abort:  # ввод не с терминала
+            confirmed = False
+        if not confirmed:
+            _err("Отменено: в облако ничего не отправлено")
+            raise typer.Exit(EXIT_ERROR)
+        client = make_client()
+        check_credentials(client)
+        profile = style.build_profile(client, cfg.style.model, cfg.cloud.effort, samples)
+        style.save_profile(STYLE_PATH, profile.text)
+        usd = usage_usd(profile.input_tokens, profile.output_tokens, price_for(cfg.cloud, cfg.style.model))
+        make_cache().add_spend(STYLE_SPEND_KEY, cfg.style.model, usd)
+        typer.echo(f"Профиль стиля: {STYLE_PATH} (прежний — style.prev.md)\nСтоимость: ${usd:.4f}\n"
+                   "Прочитайте профиль и поправьте его, если нужно: он уйдёт в каждый запрос второй ступени.")
 
 
 def _print_result(result: pipeline.RunResult, opts: pipeline.RunOptions, limit: float) -> bool:

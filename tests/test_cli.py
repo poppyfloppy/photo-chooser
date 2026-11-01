@@ -136,3 +136,65 @@ def test_unexpected_error_writes_traceback_log(env, monkeypatch):
     assert len(logs) == 1 and str(logs[0]) in result.output
     text = logs[0].read_text(encoding="utf-8")
     assert "Traceback" in text and "KeyError: 'ASSET-1/L0/001'" in text and "in broken" in text
+
+
+def _style_env(tmp_path, monkeypatch, n_posts=12, text="## Лента\nТёплый свет.\n\n## Stories\nЛегко.",
+               without_preview=0):
+    from datetime import timedelta
+
+    from fakes import fake_response
+    from photo_chooser.config import StyleCfg
+
+    posts = [make_asset(uuid=f"S{i:02d}", taken_at=datetime(2026, 10, 1, tzinfo=UTC) - timedelta(days=i))
+             for i in range(n_posts)]
+    shots = [make_asset(uuid="G0", width=1179, height=2556, is_screenshot=True)]
+    previews = {a.uuid: save_jpeg(varied_scene(i), tmp_path / f"s{i}.jpg") for i, a in enumerate(posts + shots)
+                if i >= without_preview}
+    library = FakeLibrary([AlbumRef("SN", "Snapseed", n_posts), AlbumRef("GR", "Instagram style", 1)],
+                          {"SN": posts, "GR": shots}, previews)
+    cache = Cache(tmp_path / "c.sqlite")
+    client = FakeClient(lambda n, kw: fake_response(text=text))
+    monkeypatch.setattr(cli, "load_app_config", lambda: AppConfig(
+        output_dir=tmp_path / "out", style=StyleCfg(albums=["Snapseed"], screenshots_album="Instagram style")))
+    monkeypatch.setattr(cli, "make_library", lambda: library)
+    monkeypatch.setattr(cli, "make_cache", lambda: cache)
+    monkeypatch.setattr(cli, "make_client", lambda: client)
+    monkeypatch.setattr(cli, "STYLE_PATH", tmp_path / "cfg" / "style.md")
+    return client, cache
+
+
+def test_style_command_yes_writes_profile(tmp_path, monkeypatch):
+    client, cache = _style_env(tmp_path, monkeypatch)
+    result = runner.invoke(cli.app, ["style", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Отправить 13 изображений (постов 12, скриншотов 1) модели claude-opus-5-5" in result.output
+    assert (tmp_path / "cfg" / "style.md").read_text(encoding="utf-8").startswith("## Лента")
+    assert str(tmp_path / "cfg" / "style.md") in result.output
+    assert len(client.calls) == 1 and cache.album_spend("style") > 0
+
+
+def test_style_command_declined_sends_nothing(tmp_path, monkeypatch):
+    client, _ = _style_env(tmp_path, monkeypatch)
+    result = runner.invoke(cli.app, ["style"], input="n\n")
+    assert result.exit_code == 1 and "Отменено" in result.output
+    assert client.calls == [] and not (tmp_path / "cfg" / "style.md").exists()
+    result = runner.invoke(cli.app, ["style"], input="")  # ввод не с терминала, ответа нет
+    assert result.exit_code == 1 and client.calls == []
+
+
+def test_style_command_too_few_posts_exit_2(tmp_path, monkeypatch):
+    client, _ = _style_env(tmp_path, monkeypatch, n_posts=9)
+    result = runner.invoke(cli.app, ["style", "--yes"])
+    assert result.exit_code == 2 and client.calls == []
+
+
+
+def test_style_command_missing_previews_keeps_profile(tmp_path, monkeypatch):
+    client, _ = _style_env(tmp_path, monkeypatch, without_preview=11)
+    profile = tmp_path / "cfg" / "style.md"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("хороший профиль\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["style", "--yes"])
+    assert result.exit_code == 2 and client.calls == []
+    assert profile.read_text(encoding="utf-8") == "хороший профиль\n"
+    assert not (tmp_path / "cfg" / "style.prev.md").exists()

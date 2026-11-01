@@ -185,3 +185,29 @@ def test_themes_key_depends_on_album_and_theme_list():
     a_interval = Theme(name="Гиза", query="пирамиды",
                        start=datetime(2026, 3, 14, 5, 0), end=datetime(2026, 3, 14, 12, 0))
     assert base == themes_key("Egypt.26", [a_interval, b])
+
+
+def test_style_defaults(tmp_path):
+    from datetime import date
+
+    style = load_app_config(tmp_path / "nope.yaml").style
+    assert style.sample == 40 and style.reference_images == 2
+    assert style.model == "claude-opus-5-5"
+    assert style.since == date(2018, 1, 1)
+    assert style.albums == [] and style.screenshots_album is None
+
+
+def test_style_from_yaml(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("style:\n  albums: [Snapseed, Instasize]\n  screenshots_album: Instagram style\n", encoding="utf-8")
+    style = load_app_config(path).style
+    assert style.albums == ["Snapseed", "Instasize"]
+    assert style.screenshots_album == "Instagram style"
+    assert style.sample == 40
+
+
+def test_style_rejects_negative_reference_images(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("style:\n  reference_images: -1\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_app_config(path)

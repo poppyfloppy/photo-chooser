@@ -201,3 +201,15 @@ def test_report_cloud_header(tmp_path):
     assert "effort: medium" in text and "screen-1, judge-1" in text
     assert "без облака" not in text
     assert "Недобор: нет" in text
+
+
+def test_report_shows_style_line(tmp_path):
+    try_export, _ = _fake_export()
+    assembled = assemble(Pools(feed=[], stories=[]), 0, 0, try_export)
+    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-haiku-5-5", effort="medium",
+                          prompt_versions="screen-2, judge-2/style-ab12cd34", run_at=NOW, warnings=[], album="Egypt.26",
+                          style="style.md от 2026-11-01, отпечаток ab12cd34, скриншотов в запросе: 2")
+    path = tmp_path / "report.md"
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, assembled, _stats())
+    assert "- Стиль: style.md от 2026-11-01, отпечаток ab12cd34, скриншотов в запросе: 2" in path.read_text(
+        encoding="utf-8")

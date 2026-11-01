@@ -29,13 +29,19 @@ class FakeLibrary:
         self.live_requests: list[str] = []
         self.preview_requests: list[str] = []
 
+    def add_album(self, album: AlbumRef, assets: list[Asset], previews: dict[str, Path]) -> None:
+        self._albums.append(album)
+        self._assets[album.uuid] = list(assets)
+        self._previews.update(previews)
+
     def albums(self) -> list[AlbumRef]:
         return list(self._albums)
 
     def find_album(self, title: str) -> AlbumRef:
         return resolve_album(title, self._albums)
 
-    def assets(self, album: AlbumRef) -> list[Asset]:
+    def assets(self, album: AlbumRef, *, album_order: bool = False) -> list[Asset]:
+        # в фейке список и есть порядок альбома; сортировку по дате делает вызывающий код
         return list(self._assets.get(album.uuid, []))
 
     def preview(self, asset: Asset, long_side: int) -> Path | None:

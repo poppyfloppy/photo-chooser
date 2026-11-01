@@ -49,3 +49,10 @@ def test_check_budget():
     assert "--max-cost" in str(e.value)
     check_budget(4.0, 1.5, 6.0)
     check_budget(3.5, 1.5, 5.0)  # ровно лимит — можно
+
+
+def test_estimate_adds_judge_extra_tokens():
+    cfg = CloudCfg()
+    plain = estimate_run_usd(0, [100], cfg, "claude-haiku-5-5", "claude-opus-5-5")
+    styled = estimate_run_usd(0, [100], cfg, "claude-haiku-5-5", "claude-opus-5-5", judge_extra_tokens=4000)
+    assert styled - plain == pytest.approx(5 * 4000 * 4.00 / 1e6)
