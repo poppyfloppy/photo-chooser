@@ -100,3 +100,20 @@ def write_mov(path: Path, frames: list[Image.Image], fps: int = 10) -> Path:
         time.sleep(0.02)
     assert writer.status() == AVFoundation.AVAssetWriterStatusCompleted, writer.error()
     return path
+
+
+def varied_scene(i: int, size=(320, 240)) -> Image.Image:
+    """Различимые «фото» для тестов конвейера: фон, фигуры и их положение зависят от i."""
+    rng = np.random.default_rng(1000 + i)
+    bg = tuple(int(x) for x in rng.integers(40, 200, 3))
+    im = Image.new("RGB", size, bg)
+    d = ImageDraw.Draw(im)
+    for _ in range(6):
+        x, y = int(rng.integers(0, size[0] - 60)), int(rng.integers(0, size[1] - 60))
+        r = int(rng.integers(15, 60))
+        color = tuple(int(c) for c in rng.integers(0, 256, 3))
+        if rng.random() < 0.5:
+            d.ellipse((x, y, x + r, y + r), fill=color)
+        else:
+            d.rectangle((x, y, x + r, y + r // 2), fill=color)
+    return im
