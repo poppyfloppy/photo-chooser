@@ -1,5 +1,6 @@
 """CLI: photo-chooser albums | run (SPEC FR-7)."""
 
+import traceback
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from photo_chooser.judge.stages import make_client
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosAccessError
 
 EXIT_ERROR, EXIT_CONFIG, EXIT_BUDGET, EXIT_ALBUM, EXIT_ACCESS = 1, 2, 3, 4, 5
+LOG_DIR = Path("~/Library/Logs/photo-chooser").expanduser()
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Шорт-лист кадров для Instagram из альбома Photos (лента и stories).")
@@ -32,6 +34,16 @@ def make_cache() -> Cache:
 
 def _err(message: str) -> None:
     typer.echo(message, err=True)
+
+
+def _write_traceback() -> Path | None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        path = LOG_DIR / f"error-{datetime.now():%Y%m%d-%H%M%S}.log"
+        path.write_text(traceback.format_exc(), encoding="utf-8")
+        return path
+    except OSError:
+        return None
 
 
 @contextmanager
@@ -56,8 +68,9 @@ def _exit_codes():
         raise typer.Exit(EXIT_CONFIG) from None
     except typer.Exit:
         raise
-    except Exception as e:  # noqa: BLE001 — последняя линия: сообщение вместо трассировки
-        _err(f"Ошибка: {type(e).__name__}: {e}")
+    except Exception as e:  # noqa: BLE001 — последняя линия: сообщение, трассировка — в лог-файл
+        log = _write_traceback()
+        _err(f"Ошибка: {type(e).__name__}: {e}" + (f"\nПодробности: {log}" if log else ""))
         raise typer.Exit(EXIT_ERROR) from None
 
 

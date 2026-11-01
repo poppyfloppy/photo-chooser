@@ -120,3 +120,19 @@ def test_dry_run_prints_counts_and_estimate(env):
     assert "«Гиза»: 1" in result.output and "«День 1»: 1" in result.output
     assert "Оценка стоимости" in result.output and "$" in result.output
     assert library.exported == [] and not (tmp_path / "out").exists()
+
+
+def test_unexpected_error_writes_traceback_log(env, monkeypatch):
+    tmp_path, *_ = env
+    monkeypatch.setattr(cli, "LOG_DIR", tmp_path / "logs")
+
+    def broken():
+        raise KeyError("ASSET-1/L0/001")
+
+    monkeypatch.setattr(cli, "make_library", broken)
+    result = runner.invoke(cli.app, ["albums"])
+    assert result.exit_code == 1
+    logs = list((tmp_path / "logs").glob("error-*.log"))
+    assert len(logs) == 1 and str(logs[0]) in result.output
+    text = logs[0].read_text(encoding="utf-8")
+    assert "Traceback" in text and "KeyError: 'ASSET-1/L0/001'" in text and "in broken" in text
