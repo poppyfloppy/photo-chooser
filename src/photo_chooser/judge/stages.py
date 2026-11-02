@@ -53,7 +53,9 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 MAX_PARALLEL_REQUESTS = 3
 RATE_LIMIT_SLEEP_S = 20
 RATE_LIMIT_ATTEMPTS = 12
-CLIENT_MAX_RETRIES = 4
+REQUEST_TIMEOUT_S = 300  # без ответа дольше — повтор (SPEC FR-7.2); у SDK по умолчанию 10 минут
+TRANSIENT_RETRIES = 4  # таймаут, сбой сети, ошибка сервера 5xx
+WAIT_NOTICE_S = 30  # строка ожидания, если ответа нет дольше
 
 T = TypeVar("T")
 
@@ -129,8 +131,9 @@ class StageOutcome(Generic[T]):
 
 
 def make_client() -> anthropic.Anthropic:
-    """Ключ — из ANTHROPIC_API_KEY или профиля `ant auth login`."""
-    return anthropic.Anthropic(max_retries=CLIENT_MAX_RETRIES)
+    """Ключ — из ANTHROPIC_API_KEY или профиля `ant auth login`. Повторы SDK выключены: их делает call_model,
+    чтобы о каждом было видно в выводе."""
+    return anthropic.Anthropic(max_retries=0, timeout=REQUEST_TIMEOUT_S)
 
 
 def check_credentials(client) -> None:
@@ -140,25 +143,55 @@ def check_credentials(client) -> None:
                           "Без облака можно запустить с --no-cloud.")
 
 
+def _quiet(message: str) -> None:
+    pass
+
+
+def _mmss(seconds: float) -> str:
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
+def _transient(e: Exception) -> str | None:
+    """Почему запрос стоит повторить, или None: таймаут, сбой сети, ошибка сервера."""
+    if isinstance(e, anthropic.APITimeoutError):
+        return f"нет ответа {REQUEST_TIMEOUT_S // 60} мин"
+    if isinstance(e, anthropic.APIConnectionError):
+        return "сбой сети"
+    if isinstance(e, anthropic.APIStatusError) and e.status_code >= 500:
+        return f"ошибка сервера {e.status_code}"
+    return None
+
+
 def call_model(client, model: str, effort: str, system: str, content: list[dict],
-               output_model: type[BaseModel] | None):
+               output_model: type[BaseModel] | None, notify: Callable[[str], None] = _quiet):
     """messages.create со схемой ответа в output_config.format (без схемы — свободный текст): usage и stop_reason
-    доступны и тогда, когда текст ответа не разбирается (refusal с текстом, обрезка по max_tokens)."""
+    доступны и тогда, когда текст ответа не разбирается (refusal с текстом, обрезка по max_tokens).
+    Пауза при 429 и повторы после таймаута, сбоя сети и 5xx сообщаются через notify (FR-7.2)."""
     output_config: dict = {"effort": effort}
     if output_model is not None:
         output_config["format"] = {"type": "json_schema", "schema": anthropic.transform_schema(output_model)}
     kwargs = dict(model=model, max_tokens=MAX_TOKENS, system=system,
                   messages=[{"role": "user", "content": content}], output_config=output_config)
-    for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
+    attempt, retries = 1, 0
+    while True:
         try:
             if model in FALLBACK_MODELS:
                 return client.beta.messages.create(**kwargs, betas=[FALLBACK_BETA], fallbacks="default")
             return client.messages.create(**kwargs)
         except anthropic.RateLimitError:
-            # SDK уже повторил запрос; лимит организации — входные токены в минуту, ждём и пробуем снова.
+            # лимит организации — входные токены в минуту: ждём и пробуем снова
             if attempt == RATE_LIMIT_ATTEMPTS:
                 raise
+            attempt += 1
+            notify(f"  лимит API, пауза {RATE_LIMIT_SLEEP_S} с (попытка {attempt}/{RATE_LIMIT_ATTEMPTS})")
             time.sleep(RATE_LIMIT_SLEEP_S)
+        except anthropic.APIError as e:
+            why = _transient(e)
+            if why is None or retries == TRANSIENT_RETRIES:
+                raise
+            retries += 1
+            notify(f"  {why} — повторяю запрос ({retries}/{TRANSIENT_RETRIES})")
+            time.sleep(min(2 ** retries, 30))
 
 
 def orientation(a: Asset) -> str:
@@ -219,14 +252,16 @@ def _parse_group(response, group: list[Asset], output_model: type[BaseModel], co
 
 
 class ScreenRunner:
-    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes]):
-        self.client, self.model, self.effort, self.preview = client, model, effort, preview
+    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes],
+                 notify: Callable[[str], None] = _quiet):
+        self.client, self.model, self.effort, self.preview, self.notify = client, model, effort, preview, notify
 
     def run_group(self, album_title: str, themes: list[Theme], group: list[Asset]) -> GroupResult[Screening]:
         listing = "\n".join(f"{n}. {theme_text(t)}" for n, t in enumerate(themes, 1))
         content = image_content(group, self.preview)
         content.append({"type": "text", "text": f"Trip album: «{album_title}»\nThemes:\n{listing}"})
-        response = call_model(self.client, self.model, self.effort, SCREEN_SYSTEM_PROMPT, content, ScreenOutput)
+        response = call_model(self.client, self.model, self.effort, SCREEN_SYSTEM_PROMPT, content, ScreenOutput,
+                              self.notify)
 
         def convert(a: Asset, item: ScreenItem) -> Screening:
             relevance: dict[str, int] = {}
@@ -257,9 +292,9 @@ def judge_prompt_version(style: "StyleContext | None") -> str:
 
 class JudgeRunner:
     def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, notify: Callable[[str], None] = _quiet):
         self.client, self.model, self.effort, self.preview = client, model, effort, preview
-        self.style = style
+        self.style, self.notify = style, notify
 
     @property
     def prompt_version(self) -> str:
@@ -278,7 +313,7 @@ class JudgeRunner:
             content += reference_content(self.style)
         content += image_content(group, self.preview, with_orientation=True)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        response = call_model(self.client, self.model, self.effort, system, content, JudgeOutput)
+        response = call_model(self.client, self.model, self.effort, system, content, JudgeOutput, self.notify)
 
         def convert(a: Asset, item: JudgeItem) -> Judgment:
             vertical = orientation(a) == "vertical"  # вертикальный кадр кадрировать не нужно
@@ -291,10 +326,12 @@ class JudgeRunner:
 
 
 def _run_groups(groups: list[list[Asset]], call: Callable[[list[Asset]], GroupResult],
-                record: Callable[[GroupResult], None], cfg: CloudCfg, extra_tokens: int = 0) -> None:
+                record: Callable[[GroupResult], None], cfg: CloudCfg, extra_tokens: int = 0,
+                log: Callable[[str], None] = _quiet, label: str = "") -> None:
     """До MAX_PARALLEL_REQUESTS запросов сразу. Ответ записывается в кэш и расход прямо в рабочем потоке —
     оплаченная группа не теряется ни при ошибке другой группы, ни при Ctrl+C. После ошибки новые группы
-    не отправляются, уже начатые доделываются; затем ошибка поднимается."""
+    не отправляются, уже начатые доделываются; затем ошибка поднимается. Каждая готовая группа и ожидание
+    ответа дольше WAIT_NOTICE_S пишутся в log (FR-7.2)."""
     for g in groups:
         tokens = group_input_tokens([(a.width, a.height) for a in g], cfg.preview_long_side_px) + extra_tokens
         if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
@@ -313,20 +350,31 @@ def _run_groups(groups: list[list[Asset]], call: Callable[[list[Asset]], GroupRe
                 running.add(pool.submit(lambda group: record(call(group)), g))
 
         fill()
+        start = last = time.monotonic()
+        finished = 0
         while running:
-            done, running = wait(running, return_when=FIRST_COMPLETED)
+            done, running = wait(running, timeout=WAIT_NOTICE_S, return_when=FIRST_COMPLETED)
+            if not done:
+                log(f"  {label}: ждём ответ модели ({_mmss(time.monotonic() - last)}), "
+                    f"готово групп {finished}/{len(groups)}")
+                continue
             for f in done:
                 try:
                     f.result()
                 except Exception as e:  # noqa: BLE001 — первая ошибка поднимается после уже начатых групп
                     error = error or e
+                else:
+                    finished += 1
+                    log(f"  {label}: группа {finished}/{len(groups)} ({_mmss(time.monotonic() - start)})")
+            last = time.monotonic()
             fill()
     if error is not None:
         raise error
 
 
 def _run_stage(todo: list[Asset], groups: list[list[Asset]], cached: dict, call, put, model: str,
-               cache: Cache, cfg: CloudCfg, album_uuid: str, extra_tokens: int = 0) -> StageOutcome:
+               cache: Cache, cfg: CloudCfg, album_uuid: str, extra_tokens: int = 0,
+               log: Callable[[str], None] = _quiet, label: str = "") -> StageOutcome:
     price = price_for(cfg, model)
     outcome = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0, from_cache=len(cached))
     lock = threading.Lock()
@@ -341,12 +389,12 @@ def _run_stage(todo: list[Asset], groups: list[list[Asset]], cached: dict, call,
             outcome.unjudged.extend(result.unjudged)
             outcome.refused_groups += int(result.refused)
 
-    _run_groups(groups, call, record, cfg, extra_tokens)
+    _run_groups(groups, call, record, cfg, extra_tokens, log, label)
     return outcome
 
 
 def run_screen(runner: ScreenRunner, cache: Cache, album_title: str, album_uuid: str, themes: list[Theme],
-               assets: list[Asset], cfg: CloudCfg) -> StageOutcome[Screening]:
+               assets: list[Asset], cfg: CloudCfg, log: Callable[[str], None] = _quiet) -> StageOutcome[Screening]:
     key = themes_key(album_title, themes)
     cached, todo = {}, []
     for a in assets:
@@ -357,13 +405,14 @@ def run_screen(runner: ScreenRunner, cache: Cache, album_title: str, album_uuid:
             cached[a.uuid] = s
     todo.sort(key=lambda a: a.taken_at)
     groups = [todo[i:i + cfg.group_size] for i in range(0, len(todo), cfg.group_size)]
+    log(f"Первая ступень ({runner.model}): {len(assets)} снимков, из кэша {len(cached)}, групп {len(groups)}")
     return _run_stage(todo, groups, cached, lambda g: runner.run_group(album_title, themes, g),
                       lambda items: cache.put_screenings(items, key, runner.model, SCREEN_PROMPT_VERSION),
-                      runner.model, cache, cfg, album_uuid)
+                      runner.model, cache, cfg, album_uuid, log=log, label="первая ступень")
 
 
 def run_judge(runner: JudgeRunner, cache: Cache, theme: Theme, assets: list[Asset], order: dict[str, float],
-              cfg: CloudCfg, album_uuid: str) -> StageOutcome[Judgment]:
+              cfg: CloudCfg, album_uuid: str, log: Callable[[str], None] = _quiet) -> StageOutcome[Judgment]:
     key, version = theme.key(), runner.prompt_version
     cached, todo = {}, []
     for a in assets:
@@ -373,9 +422,10 @@ def run_judge(runner: JudgeRunner, cache: Cache, theme: Theme, assets: list[Asse
         else:
             cached[a.uuid] = j
     groups = make_groups(todo, order, cfg.group_size)
+    log(f"  вторая ступень ({runner.model}): кандидатов {len(assets)}, из кэша {len(cached)}, групп {len(groups)}")
     return _run_stage(todo, groups, cached, lambda g: runner.run_group(theme, g),
                       lambda items: cache.put_judgments(items, key, runner.model, version),
-                      runner.model, cache, cfg, album_uuid, runner.extra_input_tokens)
+                      runner.model, cache, cfg, album_uuid, runner.extra_input_tokens, log, "вторая ступень")
 
 
 
@@ -413,8 +463,9 @@ def _compose_style_system(system: str, style: "StyleContext | None") -> str:
 
 class ComposeRunner:
     def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, notify: Callable[[str], None] = _quiet):
         self.client, self.model, self.effort, self.preview, self.style = client, model, effort, preview, style
+        self.notify = notify
 
     def run(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg) -> ComposeResult:
         system = _compose_style_system(COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels,
@@ -430,7 +481,7 @@ class ComposeRunner:
                                                     f"stories {_num(f.stories_score)} · «{reason}»"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        response = call_model(self.client, self.model, self.effort, system, content, ComposeOutput)
+        response = call_model(self.client, self.model, self.effort, system, content, ComposeOutput, self.notify)
         tokens = dict(input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
         if response.stop_reason == "refusal":
             return ComposeResult(output=None, refused=True, **tokens)
@@ -451,8 +502,32 @@ def compose_input_fingerprint(cands: list[Asset], facts: dict[str, ShotFacts], l
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
+def _wait_with_notices(fn: Callable[[], T], log: Callable[[str], None], label: str) -> T:
+    """fn в фоновом потоке, пока основной пишет строку ожидания каждые WAIT_NOTICE_S (FR-7.2). Поток —
+    daemon: Ctrl+C прерывает запуск сразу, не дожидаясь ответа."""
+    box: dict = {}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # noqa: BLE001 — исключение поднимается в основном потоке
+            box["error"] = e
+
+    worker = threading.Thread(target=target, daemon=True)
+    start = time.monotonic()
+    worker.start()
+    while True:
+        worker.join(WAIT_NOTICE_S)
+        if not worker.is_alive():
+            break
+        log(f"  {label}: ждём ответ модели ({_mmss(time.monotonic() - start)})")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def run_compose(runner: ComposeRunner, cache: Cache, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts],
-                cfg: AppConfig, album_uuid: str) -> ComposeOutcome:
+                cfg: AppConfig, album_uuid: str, log: Callable[[str], None] = _quiet) -> ComposeOutcome:
     """Один запрос сборки на тему; ответ кэшируется, расход пишется сразу. Ошибки API поднимаются (FR-4.4)."""
     if not cands:
         return ComposeOutcome(posts=Posts([], []), usd=0.0, from_cache=False, refused=False)
@@ -461,6 +536,7 @@ def run_compose(runner: ComposeRunner, cache: Cache, theme: Theme, cands: list[A
     cache_key = (theme.key(), runner.model, COMPOSE_PROMPT_VERSION, fingerprint)
     cached = cache.get_composition(*cache_key)
     if cached is not None:
+        log("  сборка постов: из кэша")
         posts = validate_composition(ComposeOutput.model_validate_json(cached), ids, cfg.posts)
         return ComposeOutcome(posts=posts, usd=0.0, from_cache=True, refused=False)
     tokens = (group_input_tokens([(a.width, a.height) for a in cands], cfg.cloud.preview_long_side_px)
@@ -468,7 +544,10 @@ def run_compose(runner: ComposeRunner, cache: Cache, theme: Theme, cands: list[A
     if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
         raise ValueError(f"Запрос сборки из {len(cands)} превью ≈ {tokens} входных токенов — больше ценового порога "
                          f"{HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.compose_candidates.")
-    result = runner.run(theme, cands, facts, cfg.posts)
+    log(f"  сборка постов ({runner.model}): кандидатов {len(cands)}")
+    start = time.monotonic()
+    result = _wait_with_notices(lambda: runner.run(theme, cands, facts, cfg.posts), log, "сборка постов")
+    log(f"  сборка постов: ответ за {_mmss(time.monotonic() - start)}")
     usd = usage_usd(result.input_tokens, result.output_tokens, price_for(cfg.cloud, runner.model))
     cache.add_spend(album_uuid, runner.model, usd)
     if result.output is None:

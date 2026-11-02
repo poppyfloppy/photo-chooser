@@ -542,3 +542,32 @@ def test_compose_refusal_fallback_skips_off_theme(tmp_path):
     result, _ = _run(album, _trip(GIZA), _cfg(tmp_path, feed=9, stories=9), Cache(tmp_path / "c.sqlite"),
                      FakeClient(h))
     assert len(_feed_files(result.run_dir / "Гиза")) == 2 and _story_files(result.run_dir / "Гиза") == []
+
+
+def _logged_run(album, trip, cfg, cache, client):
+    logs: list[str] = []
+    result = run(trip, cfg, RunOptions(), album.library, cache, lambda: client, NOW, log=logs.append)
+    return result, logs
+
+
+def test_run_logs_each_stage(tmp_path):
+    # FR-7.2: по выводу видно, на каком этапе запуск и что он не завис
+    album = Album(tmp_path, n=5)
+    _, logs = _logged_run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), FakeClient(handler()))
+    expected = ["Первая ступень (claude-haiku-5-5): 5 снимков, из кэша 0, групп 1",
+                "  первая ступень: группа 1/1 (0:00)",
+                "Тема «Гиза»",
+                "  вторая ступень (claude-haiku-5-5): кандидатов 5, из кэша 0, групп 1",
+                "  вторая ступень: группа 1/1 (0:00)",
+                "  сборка постов (claude-haiku-5-5): кандидатов 5",
+                "  сборка постов: ответ за 0:00",
+                "  посты: каруселей 1 (3), stories 1"]
+    assert [line for line in logs if line in expected] == expected
+
+
+def test_run_logs_compose_fallback(tmp_path):
+    album = Album(tmp_path, n=5)
+    client = FakeClient(handler(compose=lambda n, kw: api_error()))
+    _, logs = _logged_run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
+    assert any(line.startswith("  сборка не удалась — разложено по оценкам (BadRequestError") for line in logs)
+    assert logs[-1].startswith("  посты: каруселей 1 (3)")

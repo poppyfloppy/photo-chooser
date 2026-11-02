@@ -226,10 +226,10 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
     screenings: dict[str, Screening] = {}
     screen: StageOutcome | None = None
     if not opts.no_cloud and trip.query_themes and screen_scope:
-        log(f"Первая ступень ({screen_model}): {len(screen_scope)} снимков")
-        runner = ScreenRunner(client, screen_model, cfg.cloud.effort, preview)
+        runner = ScreenRunner(client, screen_model, cfg.cloud.effort, preview, notify=log)
         # Ошибка здесь останавливает запуск: без первой ступени темы с query не обработать.
-        screen = run_screen(runner, cache, album.title, album.uuid, trip.query_themes, screen_scope, cfg.cloud)
+        screen = run_screen(runner, cache, album.title, album.uuid, trip.query_themes, screen_scope, cfg.cloud,
+                            log=log)
         screenings = screen.results
 
     run_dir = new_run_dir(cfg.output_dir, album.title, now)
@@ -265,20 +265,23 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 if cands:
                     try:
                         if judge_runner is None:
-                            judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview, style=style)
-                            compose_runner = ComposeRunner(client, judge_model, cfg.cloud.effort, preview, style=style)
+                            judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview, style=style,
+                                                       notify=log)
+                            compose_runner = ComposeRunner(client, judge_model, cfg.cloud.effort, preview,
+                                                           style=style, notify=log)
                         order = {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0) / 10
                                  for a in cands}
-                        judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid)
+                        judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid, log=log)
                         facts = shot_facts(judge.results)
                         comp = compose_candidates(cands, judge.results, state.quality, th, t.interval_only,
                                                   cfg.cloud.compose_candidates)
                         sent_to_compose = len(comp)
                         if comp:
                             posts, compose_usd, failure = _compose(compose_runner, cache, t, comp, facts, cfg,
-                                                                   album.uuid)
+                                                                   album.uuid, log)
                             if posts is None:
                                 warnings.append(f"Сборка не удалась — разложено по оценкам ({failure})")
+                                log(f"  сборка не удалась — разложено по оценкам ({failure})")
                                 posts = fallback_posts(cands, judge.results, state.quality, th, cfg.posts,
                                                        t.interval_only)
                     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
@@ -287,9 +290,12 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                         error = f"{type(e).__name__}: {e}"
                         warnings.append(f"Тема не обработана: ошибка Claude API ({error}). Повторный запуск "
                                         "продолжит с уже оплаченных оценок.")
+                        log(f"  тема не обработана: ошибка Claude API ({error})")
             if judge and judge.refused_groups:
                 warnings.append(f"Модель отказалась оценивать групп: {judge.refused_groups} — эти кадры не оценены")
 
+            if error is None:
+                log(f"  посты: {_posts_line(posts)}")
             exported = export_posts(library, posts, theme_dir, Path(tmp), cfg)
             header = ReportHeader(
                 screen_model=None if opts.no_cloud or screen is None else screen_model,
@@ -315,11 +321,16 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                      album_spend_usd=cache.album_spend(album.uuid))
 
 
+def _posts_line(posts: Posts) -> str:
+    sizes = " + ".join(str(len(c.slides)) for c in posts.carousels)
+    return f"каруселей {len(posts.carousels)}" + (f" ({sizes})" if sizes else "") + f", stories {len(posts.stories)}"
+
+
 def _compose(runner: ComposeRunner, cache: Cache, theme: Theme, comp: list[Asset], facts: dict, cfg: AppConfig,
-             album_uuid: str) -> tuple[Posts | None, float, str]:
+             album_uuid: str, log: Callable[[str], None] = _no_log) -> tuple[Posts | None, float, str]:
     """Сборка постов темы; None — не удалась (FR-4.4): отказ, неразборчивый ответ или ошибка API после повторов."""
     try:
-        outcome = run_compose(runner, cache, theme, comp, facts, cfg, album_uuid)
+        outcome = run_compose(runner, cache, theme, comp, facts, cfg, album_uuid, log)
     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
         raise
     except anthropic.APIError as e:
