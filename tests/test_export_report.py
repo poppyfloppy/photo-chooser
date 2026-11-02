@@ -221,9 +221,9 @@ def test_report_posts_tables(tmp_path):
     write_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, facts, _posts_stats())
     text = path.read_text(encoding="utf-8")
     assert "### Карусель 1 — Пирамиды" in text
-    assert "| Слайд | Файл | Лента / stories | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |" in text
+    assert "| Слайд | Файл | Оценка (лента / stories) | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |" in text
     assert "| 1 | 01_IMG_0.HEIC | 8 / 6 | горизонтальная |  | Причина S0 | до 4:5: справа | 01a_IMG_1.HEIC |" in text
-    assert "| № | Файл | Лента / stories | Тип | Что пояснить | Причина | Кадрирование (9:16) |" in text
+    assert "| № | Файл | Оценка (лента / stories) | Тип | Что пояснить | Причина | Кадрирование (9:16) |" in text
     assert "| 2 | 02_IMG_4.HEIC | 8 / 6 | интересное | рассказать о ладье Хеопса | Причина S4 | до 9:16: центр |" in text
     assert "Посты: каруселей 1 (2), stories 2" in text
     assert "сборка $0.1900 (по теме)" in text and "Отправлено в сборку: 30" in text
@@ -238,3 +238,17 @@ def test_report_fallback_warning_and_empty_posts(tmp_path):
     write_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, {}, _posts_stats())
     text = path.read_text(encoding="utf-8")
     assert "разложено по оценкам" in text and "Каруселей нет" in text and "Посты: каруселей 0, stories 0" in text
+
+
+def test_report_explains_scores(tmp_path):
+    # приёмка 0.3: колонка «Лента / stories» была непонятна, а «Причину» принимали за решение сборки
+    exported = export_posts(FakeLibrary([], {}, {}), Posts([], []), tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    cloud = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+                         prompt_versions="v", run_at=NOW, warnings=[], album="Egypt.26")
+    local = ReportHeader(screen_model=None, model=None, effort=None, prompt_versions=None, run_at=NOW, warnings=[])
+    theme = Theme(name="Гиза", query="пирамиды")
+    write_report(tmp_path / "cloud.md", theme, cloud, exported, {}, _posts_stats())
+    write_report(tmp_path / "local.md", theme, local, exported, {}, _posts_stats())
+    assert ("Оценка — баллы второй ступени 1–10 за ленту и за stories; «Причина» — её пояснение к оценке, "
+            "а не решение сборки.") in (tmp_path / "cloud.md").read_text(encoding="utf-8")
+    assert "Оценка — локальная оценка качества 0–1" in (tmp_path / "local.md").read_text(encoding="utf-8")

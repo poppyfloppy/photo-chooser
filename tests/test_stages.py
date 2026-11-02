@@ -486,3 +486,12 @@ def test_judge_reference_labels_per_kind():
     assert labels == [STYLE_REFERENCE_LABELS["feed"], STYLE_REFERENCE_LABELS["feed"], STYLE_REFERENCE_LABELS["stories"]]
     assert [base64.b64decode(content[i]["source"]["data"]) for i in (1, 3, 5)] == [b"F1", b"F2", b"S1"]
     assert content[6]["text"] == "id: p01 (horizontal)"
+
+
+def test_judge_prompt_puts_aesthetics_and_style_first():
+    # приёмка 0.3: вес эстетики и стиля поднят над техникой и познавательностью (FR-3 п.8, FR-11.4)
+    from photo_chooser.judge.prompts import STYLE_BLOCK
+
+    assert JUDGE_PROMPT_VERSION == "judge-5"
+    assert JUDGE_SYSTEM_PROMPT.count("Aesthetics come first") == 2  # для ленты и для stories
+    assert "main criterion" in STYLE_BLOCK and "as important as composition" not in STYLE_BLOCK

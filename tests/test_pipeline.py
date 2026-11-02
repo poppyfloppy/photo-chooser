@@ -13,7 +13,7 @@ from imaging import blurred, save_jpeg, varied_scene
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, ConfigError, PostsCfg, Theme, TripConfig
 from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice
-from photo_chooser.judge.prompts import JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
+from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION, JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import (
     ComposeCarousel,
     ComposeOutput,
@@ -478,7 +478,7 @@ def test_cloud_run_builds_posts(tmp_path):
     assert len(client.calls_for(ComposeOutput)) == 1
     report = result.themes[0].report_path.read_text(encoding="utf-8")
     assert "### Карусель 1 — Сюжет" in report and "интересное | пояснить" in report
-    assert "Посты: каруселей 1 (3), stories 2" in report and "compose-1" in report
+    assert "Посты: каруселей 1 (3), stories 2" in report and COMPOSE_PROMPT_VERSION in report
     assert result.themes[0].posts.carousels[0].title == "Сюжет"
 
 
