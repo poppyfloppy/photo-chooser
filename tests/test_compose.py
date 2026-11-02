@@ -212,7 +212,7 @@ def test_compose_empty_answer_is_valid_nothing(tmp_path):
 
 
 def test_compose_prompt_version_bumped():
-    assert COMPOSE_PROMPT_VERSION == "compose-4"  # сборки по прежним правилам в кэше не годятся
+    assert COMPOSE_PROMPT_VERSION == "compose-5"  # сборки по прежним правилам в кэше не годятся
 
 
 def test_compose_prompt_allows_leaving_candidates_out():
@@ -259,3 +259,10 @@ def test_compose_prompt_harmonious_cover():
     # приёмка 0.4 (D14): обложка-портрет — только гармоничный, портрет ради портрета не добавляется
     assert "only when it is harmonious" in COMPOSE_SYSTEM_PROMPT
     assert "do not add a portrait just to have one" in COMPOSE_SYSTEM_PROMPT
+
+
+def test_compose_prompt_storyline_by_set_and_coherence():
+    # приёмка 0.4 (D13): сюжет поста — по свету и эстетике набора, свет — по месту; карусель в одном ключе
+    for phrase in ("taken together", "not by the highest single scores", "depends on the place", "golden hour",
+                   "night lights of a big city", "in one key", "one interior among outdoor views, goes to stories"):
+        assert phrase in COMPOSE_SYSTEM_PROMPT
