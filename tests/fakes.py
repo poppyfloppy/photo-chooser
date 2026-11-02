@@ -75,8 +75,22 @@ def rate_limit_error() -> anthropic.RateLimitError:
 
 
 def api_error() -> anthropic.APIStatusError:
+    """Ошибка API, которую не повторяют (400): так же ведёт себя ошибка, оставшаяся после всех повторов."""
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-    return anthropic.InternalServerError("overloaded", response=httpx2.Response(500, request=request), body=None)
+    return anthropic.BadRequestError("invalid request", response=httpx2.Response(400, request=request), body=None)
+
+
+def server_error(status: int = 500) -> anthropic.APIStatusError:
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.InternalServerError("overloaded", response=httpx2.Response(status, request=request), body=None)
+
+
+def timeout_error() -> anthropic.APITimeoutError:
+    return anthropic.APITimeoutError(request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+
+
+def connection_error() -> anthropic.APIConnectionError:
+    return anthropic.APIConnectionError(request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
 
 
 def auth_error() -> anthropic.AuthenticationError:

@@ -291,7 +291,7 @@ def test_interrupt_keeps_completed_groups(tmp_path, monkeypatch):
     # Ctrl+C в главном потоке, пока группы в работе: оплаченные ответы всё равно записываются
     real_wait = stages.wait
 
-    def interrupted_wait(fs, return_when=None):
+    def interrupted_wait(fs, timeout=None, return_when=None):
         real_wait(fs)  # все запущенные группы завершились
         raise KeyboardInterrupt
 
