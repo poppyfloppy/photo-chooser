@@ -73,7 +73,7 @@ def _orientation_of(a: Asset) -> str:
     return "вертикальная" if a.is_vertical else "горизонтальная"
 
 
-def _scores(f: ShotFacts | None) -> str:
+def _score_cell(f: ShotFacts | None) -> str:
     return _score(f.score) if f else "—"
 
 
@@ -114,7 +114,7 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
         for pos, slide in enumerate(carousel.slides, 1):
             f = facts.get(slide.shot.asset.uuid)
             alternatives = ", ".join(_files(alt) for alt in slide.alternatives) or "—"
-            lines.append(f"| {pos} | {_files(slide.shot)} | {_scores(f)} | {_orientation_of(slide.shot.asset)} "
+            lines.append(f"| {pos} | {_files(slide.shot)} | {_score_cell(f)} | {_orientation_of(slide.shot.asset)} "
                          f"| {_cell('; '.join(slide.shot.notes))} | {_cell(f.reason) if f else '—'} "
                          f"| {(_cell(f.crop_feed) if f else '') or '—'} | {alternatives} |")
         lines.append("")
@@ -126,7 +126,8 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
                   "|---|---|---|---|---|---|---|"]
         for pos, story in enumerate(posts.stories, 1):
             f = facts.get(story.shot.asset.uuid)
-            lines.append(f"| {pos} | {_files(story.shot)} | {_scores(f)} | {STORY_KINDS.get(story.kind, story.kind)} "
+            lines.append(f"| {pos} | {_files(story.shot)} | {_score_cell(f)} "
+                         f"| {STORY_KINDS.get(story.kind, story.kind)} "
                          f"| {_cell(story.hint) or '—'} | {_cell(f.reason) if f else '—'} "
                          f"| {(_cell(f.crop_stories) if f else '') or '—'} |")
         lines.append("")

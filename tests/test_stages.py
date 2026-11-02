@@ -64,9 +64,9 @@ def judge_handler(score=7, interesting=False, only=None, **resp):
     def handler(n, kwargs):
         ids = ids_in(kwargs["messages"][0]["content"])
         ids = [i for i in ids if only is None or i in only]
-        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=score, interesting=interesting,
-                                                          reason="Пирамиды на закате", crop_feed="", crop_stories="")
-                                                for i in ids]), **resp)
+        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=score,
+                                                          interesting=interesting, reason="Пирамиды на закате",
+                                                          crop_feed="", crop_stories="") for i in ids]), **resp)
     return handler
 
 
@@ -156,8 +156,10 @@ def test_screen_groups_follow_capture_time(tmp_path, monkeypatch):
 def test_judge_maps_short_ids_and_clamps():
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[
-            JudgeItem(id="p02", matches_theme=False, score=0, interesting=False, reason="Не Гиза", crop_feed="", crop_stories=""),
-            JudgeItem(id="p01", matches_theme=True, score=8, interesting=False, reason="Сфинкс крупно", crop_feed="", crop_stories="")]))
+            JudgeItem(id="p02", matches_theme=False, score=0, interesting=False, reason="Не Гиза", crop_feed="",
+                      crop_stories=""),
+            JudgeItem(id="p01", matches_theme=True, score=8, interesting=False, reason="Сфинкс крупно", crop_feed="",
+                      crop_stories="")]))
 
     client = FakeClient(handler)
     result = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(2))
@@ -173,8 +175,10 @@ def test_missing_ids_are_unjudged(tmp_path):
 
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[
-            JudgeItem(id="p01", matches_theme=True, score=8, interesting=False, reason="r", crop_feed="", crop_stories=""),
-            JudgeItem(id="p99", matches_theme=True, score=8, interesting=False, reason="r", crop_feed="", crop_stories="")]))
+            JudgeItem(id="p01", matches_theme=True, score=8, interesting=False, reason="r", crop_feed="",
+                      crop_stories=""),
+            JudgeItem(id="p99", matches_theme=True, score=8, interesting=False, reason="r", crop_feed="",
+                      crop_stories="")]))
 
     client = FakeClient(handler)
     runner = JudgeRunner(client, HAIKU, "medium", _preview)
@@ -475,7 +479,8 @@ def test_judge_maps_crop_advice_and_clears_vertical():
 def test_judge_id_with_orientation_suffix_still_maps():
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[JudgeItem(id="p01 (horizontal)", matches_theme=True, score=8,
-                                                          interesting=False, reason="r", crop_feed="", crop_stories="")]))
+                                                          interesting=False, reason="r", crop_feed="",
+                                                          crop_stories="")]))
 
     result = JudgeRunner(FakeClient(handler), HAIKU, "medium", _preview).run_group(THEMES[0], _oriented()[:1])
     assert [j.uuid for j in result.items] == ["H"] and result.unjudged == []

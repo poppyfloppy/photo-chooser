@@ -536,8 +536,8 @@ def test_compose_refusal_fallback_skips_off_theme(tmp_path):
         if output_model_of(kw) is JudgeOutput:
             ids = ids_in(kw["messages"][0]["content"])
             return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=i in ("p01", "p03"), score=9,
-                                                              interesting=False, reason="r", crop_feed="", crop_stories="")
-                                                    for i in ids]))
+                                                              interesting=False, reason="r", crop_feed="",
+                                                              crop_stories="") for i in ids]))
         return base(n, kw)
 
     result, _ = _run(album, _trip(GIZA), _cfg(tmp_path, feed=9, stories=9), Cache(tmp_path / "c.sqlite"),

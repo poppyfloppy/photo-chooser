@@ -36,6 +36,7 @@ from photo_chooser.report import ReportHeader, ThemeStats, write_report
 from photo_chooser.select import (
     Posts,
     compose_candidates,
+    compose_window,
     fallback_posts,
     in_interval,
     local_facts,
@@ -150,7 +151,7 @@ def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets:
         else:
             screenings[a.uuid] = s
     n_judge, n_compose = [], []
-    limit, extra = cfg.cloud.compose_candidates, cfg.posts.stories  # «интересные» сверх окна (FR-4.1)
+    limit, extra = compose_window(cfg.cloud, cfg.posts)
     for t in trip.themes:
         assets = theme_assets[t.key()]
         if n_screen and not t.interval_only:
@@ -274,7 +275,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                         judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid, log=log)
                         facts = shot_facts(judge.results)
                         comp = compose_candidates(cands, judge.results, state.quality, th, t.interval_only,
-                                                  cfg.cloud.compose_candidates, cfg.posts.stories)
+                                                  *compose_window(cfg.cloud, cfg.posts))
                         sent_to_compose = len(comp)
                         if comp:
                             posts, compose_usd, failure = _compose(compose_runner, cache, t, comp, facts, cfg,

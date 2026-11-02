@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from photo_chooser.analysis.quality import percentile_ranks
-from photo_chooser.config import PostsCfg, Theme, Thresholds
+from photo_chooser.config import CloudCfg, PostsCfg, Theme, Thresholds
 from photo_chooser.models import Asset, Judgment, LocalFeatures, Screening
 
 if TYPE_CHECKING:
@@ -90,6 +90,11 @@ class ShotFacts:
     reason: str
     crop_feed: str
     crop_stories: str
+
+
+def compose_window(cloud: CloudCfg, posts: PostsCfg) -> tuple[int, int]:
+    """FR-4.1: окно сборки — сколько сильнейших кадров видит сборка и сколько «интересных» добавляется сверх него."""
+    return cloud.compose_candidates, posts.stories
 
 
 def compose_candidates(cands: list[Asset], judgments: dict[str, Judgment], quality: dict[str, float],

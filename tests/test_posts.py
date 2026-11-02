@@ -138,7 +138,8 @@ def test_shot_facts_and_local_facts():
     feats = {"a": LocalFeatures(uuid="a", aesthetic=0.7, is_utility=False, sharpness=5, mean_luma=0.5,
                                 face_quality=None, feature_print=b"")}
     local = local_facts([a], {"a": 0.61}, feats)
-    assert local["a"].score == 0.61 and local["a"].interesting is False and "эстетика 0.70" in local["a"].reason and local["a"].crop_feed == ""
+    assert local["a"].score == 0.61 and local["a"].interesting is False
+    assert "эстетика 0.70" in local["a"].reason and local["a"].crop_feed == ""
 
 
 def test_fallback_posts_excludes_off_theme():
@@ -224,3 +225,11 @@ def test_fallback_and_local_stories_by_shooting_time():
     assert _uuids([s.asset for s in posts.stories]) == ["early", "late"]
     local = local_posts([top, late, early], {"top": 0.9, "late": 0.8, "early": 0.7}, {}, limits)
     assert _uuids([s.asset for s in local.stories]) == ["early", "late"]
+
+
+def test_compose_window_from_config():
+    # FR-4.1: окно сборки и предел «интересных» сверх него берутся из конфига в одном месте
+    from photo_chooser.config import CloudCfg
+    from photo_chooser.select import compose_window
+
+    assert compose_window(CloudCfg(compose_candidates=30), PostsCfg(stories=9)) == (30, 9)
