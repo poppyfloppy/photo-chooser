@@ -521,7 +521,8 @@ def test_compose_cached_on_rerun(tmp_path):
 
 def test_dry_run_estimate_includes_compose(tmp_path):
     album = Album(tmp_path, n=5)
-    few = AppConfig(output_dir=tmp_path / "out", cloud=AppConfig().cloud.model_copy(update={"compose_candidates": 1}))
+    few = AppConfig(output_dir=tmp_path / "out", cloud=AppConfig().cloud.model_copy(update={"compose_candidates": 1}),
+                    posts=PostsCfg(stories=0))  # без «интересных» сверх окна (FR-4.1) окно — ровно compose_candidates
     small, _ = _run(album, _trip(GIZA), few, Cache(tmp_path / "a.sqlite"), dry_run=True)
     full, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "b.sqlite"), dry_run=True)
     assert full.estimate_usd > small.estimate_usd > 0
@@ -571,3 +572,14 @@ def test_run_logs_compose_fallback(tmp_path):
     _, logs = _logged_run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
     assert any(line.startswith("  сборка не удалась — разложено по оценкам (BadRequestError") for line in logs)
     assert logs[-1].startswith("  посты: каруселей 1 (3)")
+
+
+def test_dry_run_estimate_includes_interesting_window(tmp_path):
+    # FR-7.1: до второй ступени сборка оценивается с «интересными» сверх окна — до posts.stories превью
+    album = Album(tmp_path, n=5)
+    cloud = AppConfig().cloud.model_copy(update={"compose_candidates": 1})
+    no_extra = AppConfig(output_dir=tmp_path / "out", cloud=cloud, posts=PostsCfg(stories=0))
+    with_extra = AppConfig(output_dir=tmp_path / "out", cloud=cloud, posts=PostsCfg(stories=9))
+    small, _ = _run(album, _trip(GIZA), no_extra, Cache(tmp_path / "a.sqlite"), dry_run=True)
+    large, _ = _run(album, _trip(GIZA), with_extra, Cache(tmp_path / "b.sqlite"), dry_run=True)
+    assert large.estimate_usd > small.estimate_usd

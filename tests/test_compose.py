@@ -62,7 +62,7 @@ def test_compose_request_shape():
     cands = _cands()
     ComposeRunner(client, HAIKU, "medium", _preview).run(THEME, cands, _facts(cands), AppConfig().posts)
     call = client.calls[0]
-    assert call["system"] == COMPOSE_SYSTEM_PROMPT.format(carousels=2, carousel_size=9, stories=9)
+    assert call["system"] == COMPOSE_SYSTEM_PROMPT.format(carousels=1, carousel_size=5, stories=9)
     assert output_model_of(call) is ComposeOutput and call["_beta"] is False
     content = call["messages"][0]["content"]
     labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
@@ -212,7 +212,7 @@ def test_compose_empty_answer_is_valid_nothing(tmp_path):
 
 
 def test_compose_prompt_version_bumped():
-    assert COMPOSE_PROMPT_VERSION == "compose-2"  # сборки по прежним правилам в кэше не годятся
+    assert COMPOSE_PROMPT_VERSION == "compose-3"  # сборки по прежним правилам в кэше не годятся
 
 
 def test_compose_prompt_allows_leaving_candidates_out():
@@ -222,7 +222,9 @@ def test_compose_prompt_allows_leaving_candidates_out():
 
 
 def test_compose_prompt_one_carousel_by_default():
-    assert "usually just one" in COMPOSE_SYSTEM_PROMPT and "at least 4 strong photos" in COMPOSE_SYSTEM_PROMPT
+    assert "the strongest storyline of the theme" in COMPOSE_SYSTEM_PROMPT
+    assert "at least 4 strong photos" in COMPOSE_SYSTEM_PROMPT
+    assert "otherwise the other storyline goes to stories" in COMPOSE_SYSTEM_PROMPT
 
 
 def test_compose_prompt_requires_different_views_by_principle():
@@ -237,4 +239,17 @@ def test_compose_prompt_stories_quality_bar():
 
 def test_compose_prompt_puts_aesthetics_and_style_first():
     assert "first of all by aesthetics" in COMPOSE_SYSTEM_PROMPT
-    assert "main criterion" in COMPOSE_STYLE_BLOCK and "not part of the style" in COMPOSE_STYLE_BLOCK
+    assert "main criterion" in COMPOSE_STYLE_BLOCK
+
+
+def test_compose_prompt_post_and_stories():
+    # D13: пост — сильнейший сюжет до 5 кадров, stories — лучшие из оставшихся в порядке съёмки; D14 — портрет-обложка
+    from photo_chooser.config import PostsCfg
+
+    limits = PostsCfg()
+    text = COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels, carousel_size=limits.carousel_size,
+                                        stories=limits.stories)
+    for phrase in ("at most 1 carousel(s) of at most 5 photos", "usually 3-5", "posed portrait of the traveller",
+                   "stories are arranged by shooting time"):
+        assert phrase in text
+    assert "presence or absence of people" not in COMPOSE_STYLE_BLOCK

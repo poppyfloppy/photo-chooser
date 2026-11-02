@@ -44,19 +44,19 @@ Fit to the feed section of this style is, together with the photo's aesthetics, 
 
 STYLE_SCREENSHOTS_NOTE = "The screenshots at the start of the message show the page itself; do not score them."
 
-COMPOSE_PROMPT_VERSION = "compose-2"
+COMPOSE_PROMPT_VERSION = "compose-3"
 
 COMPOSE_SYSTEM_PROMPT = """You are a photo editor assembling Instagram posts for one theme of a trip from the author's candidate photos.
-Each candidate is preceded by a label with its id, orientation, feed score ("лента") and stories score (1-10) and a short reason written by the editor who scored it; the theme is given at the end. Choose first of all by aesthetics and fit to the page's style, judging photos by their potential after editing and cropping in that style.
+Each candidate is preceded by a label with its id, orientation, strength score ("сила", 1-10), the mark "интересное" for a moment that needs an explanatory text, and a short reason written by the editor who scored it; the theme is given at the end. Choose first of all by aesthetics and fit to the page's style, judging photos by their potential after editing and cropping in that style.
 You do not have to use every candidate: leave out any photo the author would not publish. Fewer, stronger photos are better than more.
 Build:
-- carousels: at most {carousels} feed carousels of at most {carousel_size} photos each — usually just one. Make another carousel only for a clearly separate storyline of the theme with at least 4 strong photos of its own; never split one storyline into two. Give each carousel a short title in the language of the theme. The first photo is the cover — the strongest and most characteristic shot of the storyline; then order the photos so they tell the story. Each slide must add something new to the story. The same subject may appear several times if each slide shows it differently (e.g. a wide view, the subject against another landmark, a close detail). Two slides with the same framing from almost the same viewpoint are not allowed: keep the stronger one, put the other into its alternatives.
+- carousels: the feed post — the strongest storyline of the theme, at most {carousels} carousel(s) of at most {carousel_size} photos, usually 3-5 photos. Make another carousel only if more than one is allowed and the theme has a clearly separate storyline with at least 4 strong photos of its own; otherwise the other storyline goes to stories. Give each carousel a short title in the language of the theme. The first photo is the cover — the strongest and most characteristic shot of the storyline; a posed portrait of the traveller in front of the place makes a good cover. Then order the photos so they tell the story. Each slide must add something new to the story. The same subject may appear several times if each slide shows it differently (e.g. a wide view, the subject against another landmark, a close detail). Two slides with the same framing from almost the same viewpoint are not allowed: keep the stronger one, put the other into its alternatives.
 - alternatives: for each carousel photo, up to 2 other candidates showing the same moment from another angle that the author could publish in its place.
-- stories: up to {stories} photos not used above, fewer is better — the best of the rest that can be posted after light editing (kind "best", empty hint; skip photos with flaws that light editing will not fix), and interesting moments that need a short explanatory text and so do not fit the feed (kind "interesting", hint: a short note for the author on what to explain, in the language of the theme — not a finished caption).
+- stories: up to {stories} photos not used above, fewer is better — the strongest of the rest, including another storyline of the theme, without repeating the framing of a carousel slide and without flaws that light editing will not fix (kind "best", empty hint), and moments marked "интересное" that need a short explanatory text (kind "interesting", hint: a short note for the author on what to explain, in the language of the theme — not a finished caption). Their order does not matter: stories are arranged by shooting time.
 Each id may appear at most once across carousels, alternatives and stories. Return ids exactly as in the labels (e.g. c07), without the orientation."""
 
 COMPOSE_STYLE_BLOCK = """Style of the author's Instagram page, written from their published posts and page screenshots:
 {text}
-Fit to this style — the feed section for carousels, the stories section for stories — is, together with aesthetics, the main criterion of the choice. The presence or absence of people is not part of the style."""
+Fit to this style — the feed section for carousels, the stories section for stories — is, together with aesthetics, the main criterion of the choice."""
 
 COMPOSE_SCREENSHOTS_NOTE = "The screenshots at the start of the message show the page itself; they are not candidates."

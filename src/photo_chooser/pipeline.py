@@ -150,12 +150,12 @@ def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets:
         else:
             screenings[a.uuid] = s
     n_judge, n_compose = [], []
-    limit = cfg.cloud.compose_candidates
+    limit, extra = cfg.cloud.compose_candidates, cfg.posts.stories  # «интересные» сверх окна (FR-4.1)
     for t in trip.themes:
         assets = theme_assets[t.key()]
         if n_screen and not t.interval_only:
             n_judge.append(min(len(assets), cfg.cloud.candidates_per_theme))  # кандидаты ещё неизвестны
-            n_compose.append(min(len(assets), limit))
+            n_compose.append(min(len(assets), limit + extra))
             continue
         cands = screen_candidates(assets, screenings, state.quality, t, cfg.thresholds.min_theme_relevance,
                                   cfg.cloud.candidates_per_theme)
@@ -163,9 +163,9 @@ def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets:
                   if (j := cache.get_judgment(a.uuid, t.key(), judge_model, judge_prompt_version(style))) is not None}
         n_judge.append(len(cands) - len(judged))
         if len(judged) < len(cands):  # оценки ещё неизвестны — вход сборки тоже
-            n_compose.append(min(len(cands), limit))
+            n_compose.append(min(len(cands), limit + extra))
             continue
-        comp = compose_candidates(cands, judged, state.quality, cfg.thresholds, t.interval_only, limit)
+        comp = compose_candidates(cands, judged, state.quality, cfg.thresholds, t.interval_only, limit, extra)
         fingerprint = compose_input_fingerprint(comp, shot_facts(judged), cfg.posts, style)
         cached = comp and cache.get_composition(t.key(), judge_model, COMPOSE_PROMPT_VERSION, fingerprint) is not None
         n_compose.append(0 if cached else len(comp))
@@ -274,7 +274,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                         judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid, log=log)
                         facts = shot_facts(judge.results)
                         comp = compose_candidates(cands, judge.results, state.quality, th, t.interval_only,
-                                                  cfg.cloud.compose_candidates)
+                                                  cfg.cloud.compose_candidates, cfg.posts.stories)
                         sent_to_compose = len(comp)
                         if comp:
                             posts, compose_usd, failure = _compose(compose_runner, cache, t, comp, facts, cfg,

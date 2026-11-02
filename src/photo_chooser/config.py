@@ -137,8 +137,8 @@ DEFAULT_PRICING = {
 class PostsCfg(_Strict):
     """Посты на тему (SPEC FR-4): лимиты каруселей ленты и stories."""
 
-    carousels: int = Field(default=2, ge=0)
-    carousel_size: int = Field(default=9, ge=1)
+    carousels: int = Field(default=1, ge=0)
+    carousel_size: int = Field(default=5, ge=1)
     stories: int = Field(default=9, ge=0)
 
 

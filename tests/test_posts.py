@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from conftest import make_asset
 from photo_chooser.config import PostsCfg, Thresholds
 from photo_chooser.judge.stages import ComposeCarousel, ComposeOutput, ComposeSlide, ComposeStory
@@ -12,7 +14,7 @@ from photo_chooser.select import (
 )
 
 TH = Thresholds()  # min_score = 5
-LIMITS = PostsCfg()
+LIMITS = PostsCfg(carousels=2, carousel_size=9, stories=9)  # прежние лимиты: проверки ниже о них
 
 
 def _j(a, score, matches=True, reason="r", interesting=False, crop_feed="", crop_stories=""):
@@ -166,3 +168,59 @@ def test_validate_alternatives_filtered_before_limit():
     assets, ids = _ids(4)
     posts = validate_composition(_out(carousels=[("X", [("c01", ["c99", "c02", "c03", "c04"])])]), ids, LIMITS)
     assert _uuids(posts.carousels[0].slides[0].alternatives) == ["A02", "A03"]
+
+
+# --- версия 0.4: «интересные» сверх окна и stories по времени съёмки (FR-4.1, FR-4.3, D13) ------
+
+
+def test_compose_candidates_adds_interesting_beyond_window():
+    s9, s8, s6, i5, i4, i7 = (make_asset(uuid=u) for u in ("s9", "s8", "s6", "i5", "i4", "i7"))
+    judgments = {"s9": _j(s9, 9), "s8": _j(s8, 8), "s6": _j(s6, 6), "i5": _j(i5, 5, interesting=True),
+                 "i4": _j(i4, 4, interesting=True), "i7": _j(i7, 7, interesting=True)}
+    cands = [s9, s8, s6, i5, i4, i7]
+    got = compose_candidates(cands, judgments, {}, TH, interval_only=False, limit=2, extra_interesting=1)
+    assert _uuids(got) == ["s9", "s8", "i7"]
+    assert _uuids(compose_candidates(cands, judgments, {}, TH, interval_only=False, limit=2)) == ["s9", "s8"]
+
+
+def test_compose_candidates_interesting_flood_capped():
+    many = [make_asset(uuid=f"i{n:02d}") for n in range(20)]
+    judgments = {a.uuid: _j(a, 6, interesting=True) for a in many}
+    got = compose_candidates(many, judgments, {}, TH, interval_only=False, limit=2, extra_interesting=3)
+    assert len(got) == 5
+
+
+def test_compose_candidates_only_interesting_below_threshold():
+    weak, i1, i2 = make_asset(uuid="w"), make_asset(uuid="i1"), make_asset(uuid="i2")
+    judgments = {"w": _j(weak, 3), "i1": _j(i1, 4, interesting=True), "i2": _j(i2, 2, interesting=True)}
+    got = compose_candidates([weak, i1, i2], judgments, {}, TH, interval_only=False, limit=30, extra_interesting=9)
+    assert _uuids(got) == ["i1", "i2"]
+
+
+def _timed(uuid, hour):
+    return make_asset(uuid=uuid, taken_at=datetime(2026, 10, 26, hour, 0, tzinfo=UTC))
+
+
+def test_validate_stories_by_shooting_time():
+    a10, a11, a12 = _timed("A10", 10), _timed("A11", 11), _timed("A12", 12)
+    ids = {"c01": a10, "c02": a11, "c03": a12}
+    out = _out(stories=[("c03", "best", ""), ("c01", "best", ""), ("c02", "interesting", "что это")])
+    assert _uuids([s.asset for s in validate_composition(out, ids, LIMITS).stories]) == ["A10", "A11", "A12"]
+    two = PostsCfg(carousels=1, carousel_size=5, stories=2)
+    assert _uuids([s.asset for s in validate_composition(out, ids, two).stories]) == ["A10", "A12"]
+
+
+def test_validate_stories_same_time_keep_model_order():
+    assets, ids = _ids(3)  # make_asset: одинаковое время съёмки
+    out = _out(stories=[("c03", "best", ""), ("c01", "best", ""), ("c02", "best", "")])
+    assert _uuids([s.asset for s in validate_composition(out, ids, LIMITS).stories]) == ["A03", "A01", "A02"]
+
+
+def test_fallback_and_local_stories_by_shooting_time():
+    top, late, early = _timed("top", 9), _timed("late", 15), _timed("early", 8)
+    judgments = {"top": _j(top, 9), "late": _j(late, 8), "early": _j(early, 7)}
+    limits = PostsCfg(carousels=1, carousel_size=1, stories=5)
+    posts = fallback_posts([top, late, early], judgments, {}, TH, limits)
+    assert _uuids([s.asset for s in posts.stories]) == ["early", "late"]
+    local = local_posts([top, late, early], {"top": 0.9, "late": 0.8, "early": 0.7}, {}, limits)
+    assert _uuids([s.asset for s in local.stories]) == ["early", "late"]
