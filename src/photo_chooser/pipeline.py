@@ -279,7 +279,8 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                                                                    album.uuid)
                             if posts is None:
                                 warnings.append(f"Сборка не удалась — разложено по оценкам ({failure})")
-                                posts = fallback_posts(cands, judge.results, state.quality, th, cfg.posts)
+                                posts = fallback_posts(cands, judge.results, state.quality, th, cfg.posts,
+                                                       t.interval_only)
                     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
                         raise  # ключ не подходит — другие темы упадут так же
                     except anthropic.APIError as e:
@@ -323,7 +324,7 @@ def _compose(runner: ComposeRunner, cache: Cache, theme: Theme, comp: list[Asset
         raise
     except anthropic.APIError as e:
         return None, 0.0, f"{type(e).__name__}: {e}"
-    failure = "" if outcome.posts is not None else ("модель отказалась" if outcome.refused else "неразборчивый ответ")
+    failure = "" if outcome.posts is not None else ("модель отказалась" if outcome.refused else outcome.note)
     return outcome.posts, outcome.usd, failure
 
 

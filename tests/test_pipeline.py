@@ -525,3 +525,20 @@ def test_dry_run_estimate_includes_compose(tmp_path):
     small, _ = _run(album, _trip(GIZA), few, Cache(tmp_path / "a.sqlite"), dry_run=True)
     full, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "b.sqlite"), dry_run=True)
     assert full.estimate_usd > small.estimate_usd > 0
+
+
+def test_compose_refusal_fallback_skips_off_theme(tmp_path):
+    album = Album(tmp_path, n=4)
+    base = handler(compose=lambda n, kw: fake_response(text="no", stop_reason="refusal"))
+
+    def h(n, kw):
+        if output_model_of(kw) is JudgeOutput:
+            ids = ids_in(kw["messages"][0]["content"])
+            return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=i in ("p01", "p03"), feed_score=9,
+                                                              stories_score=9, reason="r", crop_feed="", crop_stories="")
+                                                    for i in ids]))
+        return base(n, kw)
+
+    result, _ = _run(album, _trip(GIZA), _cfg(tmp_path, feed=9, stories=9), Cache(tmp_path / "c.sqlite"),
+                     FakeClient(h))
+    assert len(_feed_files(result.run_dir / "Гиза")) == 2 and _story_files(result.run_dir / "Гиза") == []

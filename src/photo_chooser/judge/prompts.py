@@ -48,9 +48,15 @@ STYLE_SCREENSHOTS_NOTE = "The screenshots at the start of the message show the p
 COMPOSE_PROMPT_VERSION = "compose-1"
 
 COMPOSE_SYSTEM_PROMPT = """You are a photo editor assembling Instagram posts for one theme of a trip from the author's best candidate photos.
-Each candidate is preceded by its id, orientation, its feed and stories scores (1-10) and a short reason. Judge photos by their potential after editing and cropping in the page's style.
+Each candidate is preceded by a label with its id, orientation, feed score ("лента") and stories score (1-10) and a short reason; the theme is given at the end. Judge photos by their potential after editing and cropping in the page's style.
 Build:
 - carousels: up to {carousels} feed carousels of at most {carousel_size} photos each. Split by meaning: each carousel is one storyline of the theme with a short title in the language of the theme. The first photo is the cover — the strongest and most characteristic shot of the storyline; then order the photos so they tell the story. Make a second carousel only if there are enough strong, distinct photos for two. Include only photos the author would publish: fewer is better, quality first.
 - alternatives: for each carousel photo, up to 2 other candidates showing the same moment from another angle, so the author can swap them.
-- stories: up to {stories} photos not used above — the best of the rest (kind "best", empty hint), and interesting moments that need a short explanatory text and so do not fit the feed (kind "interesting", hint: what to explain, in the language of the theme).
-Use every id at most once across carousels, alternatives and stories."""
+- stories: up to {stories} photos not used above — the best of the rest (kind "best", empty hint), and interesting moments that need a short explanatory text and so do not fit the feed (kind "interesting", hint: a short note for the author on what to explain, in the language of the theme — not a finished caption).
+Use every id at most once across carousels, alternatives and stories. Return ids exactly as in the labels (e.g. c07), without the orientation."""
+
+COMPOSE_STYLE_BLOCK = """Style of the author's Instagram page, written from their published posts and page screenshots:
+{text}
+Prefer photos that fit this style — the feed section for carousels, the stories section for stories. The presence or absence of people is not part of the style."""
+
+COMPOSE_SCREENSHOTS_NOTE = "The screenshots at the start of the message show the page itself; they are not candidates."

@@ -125,3 +125,32 @@ def test_shot_facts_and_local_facts():
                                 face_quality=None, feature_print=b"")}
     local = local_facts([a], {"a": 0.61}, feats)
     assert local["a"].feed_score == 0.61 and "эстетика 0.70" in local["a"].reason and local["a"].crop_feed == ""
+
+
+def test_fallback_posts_excludes_off_theme():
+    a, b = make_asset(uuid="a"), make_asset(uuid="b")
+    judgments = {"a": _j(a, 7, 5), "b": _j(b, 9, 9, matches=False)}
+    posts = fallback_posts([a, b], judgments, {}, TH, LIMITS)
+    assert [s.asset.uuid for s in posts.carousels[0].slides] == ["a"] and posts.stories == []
+    interval = fallback_posts([a, b], judgments, {}, TH, LIMITS, interval_only=True)
+    assert [s.asset.uuid for s in interval.carousels[0].slides] == ["b", "a"]
+
+
+def test_validate_normalizes_prefix_and_case():
+    assets, ids = _ids(3)
+    posts = validate_composition(_out(carousels=[("X", [("id: C01", ["c2"]), (" c003 ", [])])]), ids, LIMITS)
+    assert [s.asset.uuid for s in posts.carousels[0].slides] == ["A01", "A03"]
+    assert _uuids(posts.carousels[0].slides[0].alternatives) == ["A02"]
+
+
+def test_validate_slides_win_over_alternatives():
+    assets, ids = _ids(3)
+    posts = validate_composition(_out(carousels=[("X", [("c01", ["c02", "c03"]), ("c02", [])])]), ids, LIMITS)
+    assert [s.asset.uuid for s in posts.carousels[0].slides] == ["A01", "A02"]
+    assert _uuids(posts.carousels[0].slides[0].alternatives) == ["A03"]
+
+
+def test_validate_alternatives_filtered_before_limit():
+    assets, ids = _ids(4)
+    posts = validate_composition(_out(carousels=[("X", [("c01", ["c99", "c02", "c03", "c04"])])]), ids, LIMITS)
+    assert _uuids(posts.carousels[0].slides[0].alternatives) == ["A02", "A03"]

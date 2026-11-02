@@ -1,5 +1,6 @@
-"""Чистая логика отбора: интервал темы, кандидаты после первой ступени, пулы ленты и stories (SPEC FR-3, FR-4)."""
+"""Чистая логика отбора: интервал темы, кандидаты ступеней, проверка ответа сборки и раскладка постов (SPEC FR-3, FR-4)."""
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -103,32 +104,51 @@ def compose_candidates(cands: list[Asset], judgments: dict[str, Judgment], quali
     return sorted(fit, key=key, reverse=True)[:limit]
 
 
+def _norm_id(raw: str) -> str:
+    """«id: C07 (horizontal)», «c7», «c007» → «c07»: модель может повторить подпись или изменить регистр."""
+    token = raw.strip().lower().removeprefix("id:").strip().split(" ")[0] if raw.strip() else ""
+    match = re.fullmatch(r"c0*(\d+)", token)
+    return f"c{int(match.group(1)):02d}" if match else token
+
+
 def validate_composition(out: "ComposeOutput", ids: dict[str, Asset], limits: PostsCfg) -> Posts:
-    """FR-4.3: неизвестные id отбрасываются, каждый кадр — один раз (слайды, их запасные, затем stories), лимиты."""
+    """FR-4.3: неизвестные id отбрасываются, каждый кадр — один раз, лимиты. Сначала занимаются слайды всех
+    каруселей, затем их запасные, затем stories: запасной ракурс не отнимает кадр у слайда."""
     used: set[str] = set()
 
     def take(raw_id: str) -> Asset | None:
-        a = ids.get(raw_id.strip().split(" ")[0])
+        a = ids.get(_norm_id(raw_id))
         if a is None or a.uuid in used:
             return None
         used.add(a.uuid)
         return a
 
-    carousels: list[Carousel] = []
+    planned: list[tuple[str, list[tuple[Asset, list[str]]]]] = []
     for raw in out.carousels:
-        if len(carousels) >= limits.carousels:
+        if len(planned) >= limits.carousels:
             break
-        slides: list[Slide] = []
+        slides: list[tuple[Asset, list[str]]] = []
         for raw_slide in raw.slides:
             if len(slides) >= limits.carousel_size:
                 break
             a = take(raw_slide.id)
-            if a is None:
-                continue
-            alternatives = [alt for alt in (take(x) for x in raw_slide.alternatives[:MAX_ALTERNATIVES]) if alt]
-            slides.append(Slide(a, alternatives))
+            if a is not None:
+                slides.append((a, raw_slide.alternatives))
         if slides:
-            carousels.append(Carousel(raw.title.strip() or f"Карусель {len(carousels) + 1}", slides))
+            planned.append((raw.title.strip() or f"Карусель {len(planned) + 1}", slides))
+    carousels: list[Carousel] = []
+    for title, slides in planned:
+        built: list[Slide] = []
+        for a, raw_alternatives in slides:
+            alternatives: list[Asset] = []
+            for raw_id in raw_alternatives:
+                if len(alternatives) >= MAX_ALTERNATIVES:
+                    break
+                alt = take(raw_id)
+                if alt is not None:
+                    alternatives.append(alt)
+            built.append(Slide(a, alternatives))
+        carousels.append(Carousel(title, built))
     stories: list[StoryPick] = []
     for raw in out.stories:
         if len(stories) >= limits.stories:
@@ -140,9 +160,10 @@ def validate_composition(out: "ComposeOutput", ids: dict[str, Asset], limits: Po
 
 
 def fallback_posts(cands: list[Asset], judgments: dict[str, Judgment], quality: dict[str, float],
-                   th: Thresholds, limits: PostsCfg) -> Posts:
-    """FR-4.4: сборка не удалась — одна карусель лучших по оценке ленты, stories — следующие по оценке stories."""
-    judged = [a for a in cands if a.uuid in judgments]
+                   th: Thresholds, limits: PostsCfg, interval_only: bool = False) -> Posts:
+    """FR-4.4: сборка не удалась — одна карусель лучших по оценке ленты, stories — следующие по оценке stories.
+    Кадры, которые вторая ступень сочла не по теме, исключаются (FR-3 п.8)."""
+    judged = [a for a in cands if a.uuid in judgments and (interval_only or judgments[a.uuid].matches_theme)]
     q = lambda a: quality.get(a.uuid, 0.0)  # noqa: E731
     feed = sorted((a for a in judged if judgments[a.uuid].feed_score >= th.min_feed_score),
                   key=lambda a: (judgments[a.uuid].feed_score, q(a)), reverse=True)[:limits.carousel_size]

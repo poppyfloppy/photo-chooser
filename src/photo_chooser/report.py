@@ -1,4 +1,4 @@
-"""report.md по теме: шапка для сравнения прогонов, таблица шорт-листа и сводка (SPEC FR-6.3)."""
+"""report.md по теме: шапка для сравнения прогонов, таблицы каруселей и stories, сводка (SPEC FR-6.3)."""
 
 from dataclasses import dataclass, field
 from datetime import datetime

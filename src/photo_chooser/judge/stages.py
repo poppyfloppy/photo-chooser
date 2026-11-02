@@ -30,6 +30,8 @@ from photo_chooser.judge.cost import (
 )
 from photo_chooser.judge.prompts import (
     COMPOSE_PROMPT_VERSION,
+    COMPOSE_SCREENSHOTS_NOTE,
+    COMPOSE_STYLE_BLOCK,
     COMPOSE_SYSTEM_PROMPT,
     JUDGE_PROMPT_VERSION,
     JUDGE_SYSTEM_PROMPT,
@@ -394,17 +396,19 @@ class ComposeOutcome:
     usd: float
     from_cache: bool
     refused: bool
+    note: str = ""  # почему сборка не удалась, если не отказ
 
 
 def _num(x: float) -> str:
     return str(int(x)) if float(x).is_integer() else f"{x:.2f}"
 
 
-def _style_system(system: str, style: "StyleContext | None") -> str:
+def _compose_style_system(system: str, style: "StyleContext | None") -> str:
+    """Стиль для сборки — без языка оценок: сборка выбирает кадры, а не ставит им баллы."""
     if style is None:
         return system
-    system += "\n\n" + STYLE_BLOCK.format(text=style.text)
-    return system + ("\n" + STYLE_SCREENSHOTS_NOTE if style.references else "")
+    system += "\n\n" + COMPOSE_STYLE_BLOCK.format(text=style.text)
+    return system + ("\n" + COMPOSE_SCREENSHOTS_NOTE if style.references else "")
 
 
 class ComposeRunner:
@@ -413,7 +417,7 @@ class ComposeRunner:
         self.client, self.model, self.effort, self.preview, self.style = client, model, effort, preview, style
 
     def run(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg) -> ComposeResult:
-        system = _style_system(COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels,
+        system = _compose_style_system(COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels,
                                                             carousel_size=limits.carousel_size,
                                                             stories=limits.stories), self.style)
         content = reference_content(self.style)
@@ -468,7 +472,11 @@ def run_compose(runner: ComposeRunner, cache: Cache, theme: Theme, cands: list[A
     usd = usage_usd(result.input_tokens, result.output_tokens, price_for(cfg.cloud, runner.model))
     cache.add_spend(album_uuid, runner.model, usd)
     if result.output is None:
-        return ComposeOutcome(posts=None, usd=usd, from_cache=False, refused=result.refused)
+        return ComposeOutcome(posts=None, usd=usd, from_cache=False, refused=result.refused,
+                              note="" if result.refused else "неразборчивый ответ")
+    posts = validate_composition(result.output, ids, cfg.posts)
+    answered = any(c.slides for c in result.output.carousels) or bool(result.output.stories)
+    if answered and not posts.carousels and not posts.stories:  # модель ответила, но ни одного известного кадра
+        return ComposeOutcome(posts=None, usd=usd, from_cache=False, refused=False, note="в ответе нет известных кадров")
     cache.put_composition(*cache_key, result.output.model_dump_json())
-    return ComposeOutcome(posts=validate_composition(result.output, ids, cfg.posts), usd=usd, from_cache=False,
-                          refused=False)
+    return ComposeOutcome(posts=posts, usd=usd, from_cache=False, refused=False)
