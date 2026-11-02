@@ -122,7 +122,7 @@ def test_load_trip_unknown_key_is_config_error(tmp_path):
 
 def test_app_config_defaults_when_file_missing(tmp_path):
     cfg = load_app_config(tmp_path / "nope.yaml")
-    assert (cfg.posts.carousels, cfg.posts.carousel_size, cfg.posts.stories) == (2, 9, 9)
+    assert (cfg.posts.carousels, cfg.posts.carousel_size, cfg.posts.stories) == (1, 5, 9)
     assert cfg.cloud.compose_candidates == 30
     assert cfg.cloud.screen_model == "claude-haiku-5-5" and cfg.cloud.model == "claude-haiku-5-5"
     assert cfg.cloud.max_cost_usd_per_album == 5.0
@@ -228,3 +228,24 @@ def test_shortlist_key_is_config_error(tmp_path):
     with pytest.raises(ConfigError) as e:
         load_app_config(path)
     assert "posts.carousels" in str(e.value)
+
+
+@pytest.mark.parametrize("key", ["min_feed_score", "min_stories_score"])
+def test_old_threshold_keys_rejected(tmp_path, key):
+    path = tmp_path / "config.yaml"
+    path.write_text(f"thresholds:\n  {key}: 6\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_app_config(path)
+    assert "thresholds.min_score" in str(e.value)
+
+
+def test_min_score_default():
+    from photo_chooser.config import Thresholds
+
+    assert Thresholds().min_score == 5
+
+
+def test_posts_defaults_one_carousel_of_five():
+    from photo_chooser.config import PostsCfg
+
+    assert PostsCfg() == PostsCfg(carousels=1, carousel_size=5, stories=9)

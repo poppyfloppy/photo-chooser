@@ -52,21 +52,21 @@ def _assets(n, start=None):
     return [make_asset(uuid=f"U{i:03d}", taken_at=t0 + timedelta(minutes=i)) for i in range(n)]
 
 
-def screen_handler(matches=lambda i: [ScreenMatch(theme=1, relevance=8)], feed=6, stories=5, **resp):
+def screen_handler(matches=lambda i: [ScreenMatch(theme=1, relevance=8)], score=6, **resp):
     def handler(n, kwargs):
         ids = ids_in(kwargs["messages"][0]["content"])
-        return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches(i), feed_score=feed,
-                                                            stories_score=stories) for i in ids]), **resp)
+        return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches(i), score=score) for i in ids]),
+                             **resp)
     return handler
 
 
-def judge_handler(feed=7, stories=5, only=None, **resp):
+def judge_handler(score=7, interesting=False, only=None, **resp):
     def handler(n, kwargs):
         ids = ids_in(kwargs["messages"][0]["content"])
         ids = [i for i in ids if only is None or i in only]
-        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, feed_score=feed,
-                                                          stories_score=stories, reason="Пирамиды на закате", crop_feed="", crop_stories="")
-                                                for i in ids]), **resp)
+        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=score,
+                                                          interesting=interesting, reason="Пирамиды на закате",
+                                                          crop_feed="", crop_stories="") for i in ids]), **resp)
     return handler
 
 
@@ -85,15 +85,31 @@ def test_screen_maps_theme_numbers_to_keys():
     result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, a)
     assert result.items[0].uuid == "U000"
     assert result.items[0].relevance == {THEMES[1].screen_key(): 8}
-    assert (result.items[0].feed_score, result.items[0].stories_score) == (6, 5)
+    assert result.items[0].score == 6
 
 
 def test_screen_drops_unknown_theme_numbers_and_clamps():
     matches = [ScreenMatch(theme=9, relevance=7), ScreenMatch(theme=1, relevance=12), ScreenMatch(theme=0, relevance=6)]
-    client = FakeClient(screen_handler(matches=lambda i: matches, feed=0, stories=15))
+    client = FakeClient(screen_handler(matches=lambda i: matches))
     result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(1))
     assert result.items[0].relevance == {THEMES[0].screen_key(): 10}
-    assert (result.items[0].feed_score, result.items[0].stories_score) == (1, 10)
+
+
+@pytest.mark.parametrize("raw, clamped", [(0, 1), (11, 10)])
+def test_screen_score_clamped(raw, clamped):
+    client = FakeClient(screen_handler(score=raw))
+    result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(1))
+    assert result.items[0].score == clamped
+
+
+def test_screen_schema_single_score():
+    assert set(ScreenItem.model_fields) == {"id", "matches", "score"}
+
+
+def test_screen_prompt_portrait_without_people_bias():
+    assert "posed portrait of the traveller" in SCREEN_SYSTEM_PROMPT
+    assert "without people" not in SCREEN_SYSTEM_PROMPT
+    assert "feed_score" not in SCREEN_SYSTEM_PROMPT
 
 
 def test_screen_request_lists_album_and_themes():
@@ -140,13 +156,15 @@ def test_screen_groups_follow_capture_time(tmp_path, monkeypatch):
 def test_judge_maps_short_ids_and_clamps():
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[
-            JudgeItem(id="p02", matches_theme=False, feed_score=11, stories_score=0, reason="Не Гиза", crop_feed="", crop_stories=""),
-            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=4, reason="Сфинкс крупно", crop_feed="", crop_stories="")]))
+            JudgeItem(id="p02", matches_theme=False, score=0, interesting=False, reason="Не Гиза", crop_feed="",
+                      crop_stories=""),
+            JudgeItem(id="p01", matches_theme=True, score=8, interesting=False, reason="Сфинкс крупно", crop_feed="",
+                      crop_stories="")]))
 
     client = FakeClient(handler)
     result = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(2))
     by_uuid = {j.uuid: j for j in result.items}
-    assert (by_uuid["U001"].matches_theme, by_uuid["U001"].feed_score, by_uuid["U001"].stories_score) == (False, 10, 1)
+    assert (by_uuid["U001"].matches_theme, by_uuid["U001"].score) == (False, 1)
     assert by_uuid["U000"].reason == "Сфинкс крупно"
     assert result.unjudged == [] and not result.refused
     assert "Theme: «Пирамиды в Гиза»" in last_text(client.calls[0]["messages"][0]["content"])
@@ -157,8 +175,10 @@ def test_missing_ids_are_unjudged(tmp_path):
 
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[
-            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=4, reason="r", crop_feed="", crop_stories=""),
-            JudgeItem(id="p99", matches_theme=True, feed_score=8, stories_score=4, reason="r", crop_feed="", crop_stories="")]))
+            JudgeItem(id="p01", matches_theme=True, score=8, interesting=False, reason="r", crop_feed="",
+                      crop_stories=""),
+            JudgeItem(id="p99", matches_theme=True, score=8, interesting=False, reason="r", crop_feed="",
+                      crop_stories="")]))
 
     client = FakeClient(handler)
     runner = JudgeRunner(client, HAIKU, "medium", _preview)
@@ -310,7 +330,7 @@ def test_judge1_cache_not_reused_after_rubric_change(tmp_path):
     from photo_chooser.models import Judgment
 
     cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
-    old = [Judgment(uuid=a.uuid, matches_theme=True, feed_score=5, stories_score=8, reason="есть люди") for a in assets]
+    old = [Judgment(uuid=a.uuid, matches_theme=True, score=5, reason="есть люди") for a in assets]
     cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-1")
     client = FakeClient(judge_handler())
     run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
@@ -321,8 +341,21 @@ def test_screen1_cache_not_reused_after_rubric_change(tmp_path):
     from photo_chooser.models import Screening
 
     cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
-    old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, feed_score=5, stories_score=8) for a in assets]
+    old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, score=5) for a in assets]
     cache.put_screenings(old, themes_key("Egypt.26", THEMES[:2]), HAIKU, "screen-1")
+    client = FakeClient(screen_handler())
+    run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
+               CloudCfg())
+    assert len(client.calls) == 1
+
+
+def test_screen2_cache_not_reused(tmp_path):
+    # две черновые оценки заменены одной силой кадра (D13) — оценки screen-2 не годятся
+    from photo_chooser.models import Screening
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, score=5) for a in assets]
+    cache.put_screenings(old, themes_key("Egypt.26", THEMES[:2]), HAIKU, "screen-2")
     client = FakeClient(screen_handler())
     run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
                CloudCfg())
@@ -429,11 +462,11 @@ def test_screen_labels_stay_plain():
 def test_judge_maps_crop_advice_and_clears_vertical():
     def handler(n, kwargs):
         return fake_response(JudgeOutput(items=[
-            JudgeItem(id="p01", matches_theme=True, feed_score=8, stories_score=6, reason="r",
+            JudgeItem(id="p01", matches_theme=True, score=8, interesting=False, reason="r",
                       crop_feed="Оставить сфинкса справа", crop_stories="Сфинкс по центру, небо сверху"),
-            JudgeItem(id="p02", matches_theme=True, feed_score=8, stories_score=6, reason="r",
+            JudgeItem(id="p02", matches_theme=True, score=8, interesting=False, reason="r",
                       crop_feed="лишний совет", crop_stories="лишний совет"),
-            JudgeItem(id="p03", matches_theme=True, feed_score=8, stories_score=6, reason="r",
+            JudgeItem(id="p03", matches_theme=True, score=8, interesting=False, reason="r",
                       crop_feed=" Пирамида по центру ", crop_stories="")]))
 
     result = JudgeRunner(FakeClient(handler), HAIKU, "medium", _preview).run_group(THEMES[0], _oriented())
@@ -445,8 +478,9 @@ def test_judge_maps_crop_advice_and_clears_vertical():
 
 def test_judge_id_with_orientation_suffix_still_maps():
     def handler(n, kwargs):
-        return fake_response(JudgeOutput(items=[JudgeItem(id="p01 (horizontal)", matches_theme=True, feed_score=8,
-                                                          stories_score=6, reason="r", crop_feed="", crop_stories="")]))
+        return fake_response(JudgeOutput(items=[JudgeItem(id="p01 (horizontal)", matches_theme=True, score=8,
+                                                          interesting=False, reason="r", crop_feed="",
+                                                          crop_stories="")]))
 
     result = JudgeRunner(FakeClient(handler), HAIKU, "medium", _preview).run_group(THEMES[0], _oriented()[:1])
     assert [j.uuid for j in result.items] == ["H"] and result.unjudged == []
@@ -456,7 +490,7 @@ def test_judge2_cache_not_reused_after_crop_advice(tmp_path):
     from photo_chooser.models import Judgment
 
     cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
-    old = [Judgment(uuid=a.uuid, matches_theme=True, feed_score=7, stories_score=5, reason="r") for a in assets]
+    old = [Judgment(uuid=a.uuid, matches_theme=True, score=7, reason="r") for a in assets]
     cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-2")
     client = FakeClient(judge_handler())
     run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
@@ -468,7 +502,7 @@ def test_judge3_cache_not_reused_after_potential_rubric(tmp_path):
     from photo_chooser.models import Judgment
 
     cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
-    old = [Judgment(uuid=a.uuid, matches_theme=True, feed_score=4, stories_score=4, reason="r") for a in assets]
+    old = [Judgment(uuid=a.uuid, matches_theme=True, score=4, reason="r") for a in assets]
     cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-3")
     client = FakeClient(judge_handler())
     run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
@@ -492,6 +526,39 @@ def test_judge_prompt_puts_aesthetics_and_style_first():
     # приёмка 0.3: вес эстетики и стиля поднят над техникой и познавательностью (FR-3 п.8, FR-11.4)
     from photo_chooser.judge.prompts import STYLE_BLOCK
 
-    assert JUDGE_PROMPT_VERSION == "judge-5"
-    assert JUDGE_SYSTEM_PROMPT.count("Aesthetics come first") == 2  # для ленты и для stories
+    assert JUDGE_PROMPT_VERSION == "judge-6"
+    assert JUDGE_SYSTEM_PROMPT.count("Aesthetics come first") == 1  # одна сила кадра (D13)
     assert "main criterion" in STYLE_BLOCK and "as important as composition" not in STYLE_BLOCK
+
+
+def test_judge_schema_score_and_interesting():
+    assert set(JudgeItem.model_fields) == {"id", "matches_theme", "score", "interesting", "reason", "crop_feed",
+                                           "crop_stories"}
+
+
+def test_judge_prompt_portrait_and_interesting():
+    from photo_chooser.judge.prompts import STYLE_BLOCK
+
+    for phrase in ("posed portrait of the traveller", "random tourists", "interesting: true"):
+        assert phrase in JUDGE_SYSTEM_PROMPT
+    for phrase in ("without people", "feed_score", "stories_score"):
+        assert phrase not in JUDGE_SYSTEM_PROMPT
+    assert "stories_score" not in STYLE_BLOCK
+
+
+def test_judge5_cache_not_reused(tmp_path):
+    # две оценки заменены силой кадра и пометкой «интересное» (D13, D14) — оценки judge-5 пересчитываются
+    from photo_chooser.models import Judgment
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Judgment(uuid=a.uuid, matches_theme=True, score=7, reason="r") for a in assets]
+    cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-5")
+    client = FakeClient(judge_handler())
+    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    assert len(client.calls) == 1
+
+
+def test_judge_score_clamped_and_interesting_kept():
+    client = FakeClient(judge_handler(score=11, interesting=True))
+    [j] = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(1)).items
+    assert j.score == 10 and j.interesting is True

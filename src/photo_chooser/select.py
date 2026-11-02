@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from photo_chooser.analysis.quality import percentile_ranks
-from photo_chooser.config import PostsCfg, Theme, Thresholds
+from photo_chooser.config import CloudCfg, PostsCfg, Theme, Thresholds
 from photo_chooser.models import Asset, Judgment, LocalFeatures, Screening
 
 if TYPE_CHECKING:
@@ -37,8 +37,7 @@ def screen_candidates(assets: list[Asset], screenings: dict[str, Screening], qua
 
     def rank(a: Asset):
         s = screenings.get(a.uuid)
-        draft = max(s.feed_score, s.stories_score) if s else 0
-        return relevance(a), draft, quality.get(a.uuid, 0.0)
+        return relevance(a), s.score if s else 0, quality.get(a.uuid, 0.0)
 
     pool = assets if theme.interval_only else [a for a in assets if relevance(a) >= min_relevance]
     return sorted(pool, key=rank, reverse=True)[:limit]
@@ -84,24 +83,34 @@ class Posts:
 
 @dataclass(frozen=True)
 class ShotFacts:
-    """Что отчёт пишет о кадре: обе оценки, причина и советы по кадрированию."""
+    """Что отчёт и сборка знают о кадре: сила, пометка «интересное», причина и советы по кадрированию."""
 
-    feed_score: float
-    stories_score: float
+    score: float
+    interesting: bool
     reason: str
     crop_feed: str
     crop_stories: str
 
 
+def compose_window(cloud: CloudCfg, posts: PostsCfg) -> tuple[int, int]:
+    """FR-4.1: окно сборки — сколько сильнейших кадров видит сборка и сколько «интересных» добавляется сверх него."""
+    return cloud.compose_candidates, posts.stories
+
+
 def compose_candidates(cands: list[Asset], judgments: dict[str, Judgment], quality: dict[str, float],
-                       th: Thresholds, interval_only: bool, limit: int) -> list[Asset]:
-    """FR-4.1: подходящие к теме и прошедшие хотя бы один порог, по большей из двух оценок, затем по качеству."""
+                       th: Thresholds, interval_only: bool, limit: int, extra_interesting: int = 0) -> list[Asset]:
+    """FR-4.1: подходящие к теме с силой не ниже min_score или с пометкой «интересное», по силе, затем по качеству;
+    «интересные» за пределами окна limit добавляются сверх него, не больше extra_interesting."""
     fit = [a for a in cands if a.uuid in judgments and (interval_only or judgments[a.uuid].matches_theme)
-           and (judgments[a.uuid].feed_score >= th.min_feed_score
-                or judgments[a.uuid].stories_score >= th.min_stories_score)]
-    key = lambda a: (max(judgments[a.uuid].feed_score, judgments[a.uuid].stories_score),  # noqa: E731
-                     quality.get(a.uuid, 0.0))
-    return sorted(fit, key=key, reverse=True)[:limit]
+           and (judgments[a.uuid].score >= th.min_score or judgments[a.uuid].interesting)]
+    ranked = sorted(fit, key=lambda a: (judgments[a.uuid].score, quality.get(a.uuid, 0.0)), reverse=True)
+    extra = [a for a in ranked[limit:] if judgments[a.uuid].interesting][:extra_interesting]
+    return ranked[:limit] + extra
+
+
+def _chronological(stories: list[StoryPick]) -> list[StoryPick]:
+    """Stories — дневник поездки: по времени съёмки (FR-4.3); при равном времени — в прежнем порядке."""
+    return sorted(stories, key=lambda s: s.asset.taken_at)
 
 
 def _norm_id(raw: str) -> str:
@@ -156,22 +165,20 @@ def validate_composition(out: "ComposeOutput", ids: dict[str, Asset], limits: Po
         a = take(raw.id)
         if a is not None:
             stories.append(StoryPick(a, raw.kind, raw.hint.strip() if raw.kind == "interesting" else ""))
-    return Posts(carousels, stories)
+    return Posts(carousels, _chronological(stories))
 
 
 def fallback_posts(cands: list[Asset], judgments: dict[str, Judgment], quality: dict[str, float],
                    th: Thresholds, limits: PostsCfg, interval_only: bool = False) -> Posts:
-    """FR-4.4: сборка не удалась — одна карусель лучших по оценке ленты, stories — следующие по оценке stories.
-    Кадры, которые вторая ступень сочла не по теме, исключаются (FR-3 п.8)."""
+    """FR-4.4: сборка не удалась — одна карусель из сильнейших кадров, stories — следующие по силе; все не ниже
+    min_score. Кадры, которые вторая ступень сочла не по теме, исключаются (FR-3 п.8)."""
     judged = [a for a in cands if a.uuid in judgments and (interval_only or judgments[a.uuid].matches_theme)]
-    q = lambda a: quality.get(a.uuid, 0.0)  # noqa: E731
-    feed = sorted((a for a in judged if judgments[a.uuid].feed_score >= th.min_feed_score),
-                  key=lambda a: (judgments[a.uuid].feed_score, q(a)), reverse=True)[:limits.carousel_size]
-    taken = {a.uuid for a in feed}
-    rest = [a for a in judged if a.uuid not in taken and judgments[a.uuid].stories_score >= th.min_stories_score]
-    stories = sorted(rest, key=lambda a: (judgments[a.uuid].stories_score, q(a)), reverse=True)[:limits.stories]
+    strong = sorted((a for a in judged if judgments[a.uuid].score >= th.min_score),
+                    key=lambda a: (judgments[a.uuid].score, quality.get(a.uuid, 0.0)), reverse=True)
+    feed = strong[:limits.carousel_size]
+    stories = strong[limits.carousel_size:limits.carousel_size + limits.stories]
     carousels = [Carousel(FALLBACK_TITLE, [Slide(a) for a in feed])] if feed and limits.carousels else []
-    return Posts(carousels, [StoryPick(a, "best", "") for a in stories])
+    return Posts(carousels, _chronological([StoryPick(a, "best", "") for a in stories]))
 
 
 def local_posts(cands: list[Asset], quality: dict[str, float], feats: dict[str, LocalFeatures],
@@ -180,17 +187,16 @@ def local_posts(cands: list[Asset], quality: dict[str, float], feats: dict[str, 
     ranked = sorted(cands, key=lambda a: quality.get(a.uuid, 0.0), reverse=True)
     feed, stories = ranked[:limits.carousel_size], ranked[limits.carousel_size:limits.carousel_size + limits.stories]
     carousels = [Carousel(LOCAL_TITLE, [Slide(a) for a in feed])] if feed and limits.carousels else []
-    return Posts(carousels, [StoryPick(a, "best", "") for a in stories])
+    return Posts(carousels, _chronological([StoryPick(a, "best", "") for a in stories]))
 
 
 def shot_facts(judgments: dict[str, Judgment]) -> dict[str, ShotFacts]:
-    return {u: ShotFacts(j.feed_score, j.stories_score, j.reason, j.crop_feed, j.crop_stories)
-            for u, j in judgments.items()}
+    return {u: ShotFacts(j.score, j.interesting, j.reason, j.crop_feed, j.crop_stories) for u, j in judgments.items()}
 
 
 def local_facts(cands: list[Asset], quality: dict[str, float],
                 feats: dict[str, LocalFeatures]) -> dict[str, ShotFacts]:
     ranks = dict(zip((a.uuid for a in cands),
                      percentile_ranks([feats[a.uuid].sharpness if a.uuid in feats else 0.0 for a in cands])))
-    return {a.uuid: ShotFacts(quality.get(a.uuid, 0.0), quality.get(a.uuid, 0.0),
-                              _local_reason(feats.get(a.uuid), ranks[a.uuid]), "", "") for a in cands}
+    return {a.uuid: ShotFacts(quality.get(a.uuid, 0.0), False, _local_reason(feats.get(a.uuid), ranks[a.uuid]), "", "")
+            for a in cands}

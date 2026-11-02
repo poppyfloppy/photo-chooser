@@ -63,8 +63,7 @@ def _theme_line(theme: Theme) -> str:
 # --- отчёт о постах (v0.3, FR-6.3) -----------------------------------------------------------
 
 STORY_KINDS = {"best": "лучшее", "interesting": "интересное"}
-SCORES_NOTE = ("Оценка — баллы второй ступени 1–10 за ленту и за stories; «Причина» — её пояснение к оценке, "
-               "а не решение сборки.")
+SCORES_NOTE = "Оценка — сила кадра по второй ступени, 1–10; «Причина» — её пояснение к оценке, а не решение сборки."
 SCORES_NOTE_LOCAL = "Оценка — локальная оценка качества 0–1 (без облака); «Причина» — из чего она сложилась."
 
 
@@ -74,8 +73,8 @@ def _orientation_of(a: Asset) -> str:
     return "вертикальная" if a.is_vertical else "горизонтальная"
 
 
-def _scores(f: ShotFacts | None) -> str:
-    return f"{_score(f.feed_score)} / {_score(f.stories_score)}" if f else "—"
+def _score_cell(f: ShotFacts | None) -> str:
+    return _score(f.score) if f else "—"
 
 
 def _files(shot: ExportedShot) -> str:
@@ -110,12 +109,12 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
         lines += ["Каруселей нет — сильных кадров для ленты не нашлось.", ""]
     for n, carousel in enumerate(posts.carousels, 1):
         lines += [f"### Карусель {n} — {carousel.title}", "", f"Папка: `feed/{carousel.folder}/`", "",
-                  "| Слайд | Файл | Оценка (лента / stories) | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |",
+                  "| Слайд | Файл | Оценка | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |",
                   "|---|---|---|---|---|---|---|---|"]
         for pos, slide in enumerate(carousel.slides, 1):
             f = facts.get(slide.shot.asset.uuid)
             alternatives = ", ".join(_files(alt) for alt in slide.alternatives) or "—"
-            lines.append(f"| {pos} | {_files(slide.shot)} | {_scores(f)} | {_orientation_of(slide.shot.asset)} "
+            lines.append(f"| {pos} | {_files(slide.shot)} | {_score_cell(f)} | {_orientation_of(slide.shot.asset)} "
                          f"| {_cell('; '.join(slide.shot.notes))} | {_cell(f.reason) if f else '—'} "
                          f"| {(_cell(f.crop_feed) if f else '') or '—'} | {alternatives} |")
         lines.append("")
@@ -123,11 +122,12 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
     if not posts.stories:
         lines += ["Stories нет.", ""]
     else:
-        lines += ["| № | Файл | Оценка (лента / stories) | Тип | Что пояснить | Причина | Кадрирование (9:16) |",
+        lines += ["| № | Файл | Оценка | Тип | Что пояснить | Причина | Кадрирование (9:16) |",
                   "|---|---|---|---|---|---|---|"]
         for pos, story in enumerate(posts.stories, 1):
             f = facts.get(story.shot.asset.uuid)
-            lines.append(f"| {pos} | {_files(story.shot)} | {_scores(f)} | {STORY_KINDS.get(story.kind, story.kind)} "
+            lines.append(f"| {pos} | {_files(story.shot)} | {_score_cell(f)} "
+                         f"| {STORY_KINDS.get(story.kind, story.kind)} "
                          f"| {_cell(story.hint) or '—'} | {_cell(f.reason) if f else '—'} "
                          f"| {(_cell(f.crop_stories) if f else '') or '—'} |")
         lines.append("")

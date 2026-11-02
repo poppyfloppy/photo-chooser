@@ -41,8 +41,8 @@ def _cands(n=3):
             for i in range(n)]
 
 
-def _facts(cands, feed=8):
-    return {a.uuid: ShotFacts(feed, 6, f"Причина {a.uuid}", "", "") for a in cands}
+def _facts(cands, score=8, interesting=False):
+    return {a.uuid: ShotFacts(score, interesting, f"Причина {a.uuid}", "", "") for a in cands}
 
 
 def _style(fp="fp000001"):
@@ -62,11 +62,11 @@ def test_compose_request_shape():
     cands = _cands()
     ComposeRunner(client, HAIKU, "medium", _preview).run(THEME, cands, _facts(cands), AppConfig().posts)
     call = client.calls[0]
-    assert call["system"] == COMPOSE_SYSTEM_PROMPT.format(carousels=2, carousel_size=9, stories=9)
+    assert call["system"] == COMPOSE_SYSTEM_PROMPT.format(carousels=1, carousel_size=5, stories=9)
     assert output_model_of(call) is ComposeOutput and call["_beta"] is False
     content = call["messages"][0]["content"]
     labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
-    assert labels[0] == "id: c01 (horizontal) · лента 8 · stories 6 · «Причина K0»"
+    assert labels[0] == "id: c01 (horizontal) · сила 8 · «Причина K0»"
     assert labels[1].startswith("id: c02 (vertical) · ")
     assert [base64.b64decode(b["source"]["data"]) for b in content if b["type"] == "image"] == [b"K0", b"K1", b"K2"]
     assert "«Пирамиды в Гиза: Пирамиды в Гизе, Сфинкс»" in content[-1]["text"]
@@ -108,9 +108,9 @@ def test_compose_cache_reuse_and_invalidation(tmp_path):
     again = run(_facts(cands))
     assert len(client.calls) == 1 and again.from_cache and again.usd == 0
     assert again.posts.carousels[0].slides[0].asset.uuid == "K1"
-    run(_facts(cands, feed=9))  # другие оценки — другой вход
+    run(_facts(cands, score=9))  # другие оценки — другой вход
     assert len(client.calls) == 2
-    run(_facts(cands, feed=9), style=_style())
+    run(_facts(cands, score=9), style=_style())
     assert len(client.calls) == 3
 
 
@@ -122,6 +122,24 @@ def test_compose_fingerprint_depends_on_limits_and_style():
     assert base != compose_input_fingerprint(cands, facts, AppConfig().posts.model_copy(update={"stories": 5}), None)
     assert base != compose_input_fingerprint(cands, facts, AppConfig().posts, _style())
     assert base != compose_input_fingerprint(list(reversed(cands)), facts, AppConfig().posts, None)
+
+
+def test_compose_fingerprint_depends_on_interesting():
+    cands = _cands()
+    facts = _facts(cands)
+    marked = {**facts, "K1": ShotFacts(8, True, "Причина K1", "", "")}
+    assert compose_input_fingerprint(cands, facts, AppConfig().posts, None) != \
+        compose_input_fingerprint(cands, marked, AppConfig().posts, None)
+
+
+def test_compose_label_strength_and_interesting():
+    client = FakeClient(compose_handler())
+    cands = [make_asset(uuid="H1"), make_asset(uuid="H2")]  # обе горизонтальные
+    facts = {"H1": ShotFacts(8, True, "r", "", ""), "H2": ShotFacts(6, False, "r", "", "")}
+    ComposeRunner(client, HAIKU, "medium", _preview).run(THEME, cands, facts, AppConfig().posts)
+    content = client.calls[0]["messages"][0]["content"]
+    labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
+    assert labels == ["id: c01 (horizontal) · сила 8 · интересное · «r»", "id: c02 (horizontal) · сила 6 · «r»"]
 
 
 def test_compose_records_spend_once(tmp_path):
@@ -194,7 +212,7 @@ def test_compose_empty_answer_is_valid_nothing(tmp_path):
 
 
 def test_compose_prompt_version_bumped():
-    assert COMPOSE_PROMPT_VERSION == "compose-2"  # сборки по прежним правилам в кэше не годятся
+    assert COMPOSE_PROMPT_VERSION == "compose-3"  # сборки по прежним правилам в кэше не годятся
 
 
 def test_compose_prompt_allows_leaving_candidates_out():
@@ -204,7 +222,9 @@ def test_compose_prompt_allows_leaving_candidates_out():
 
 
 def test_compose_prompt_one_carousel_by_default():
-    assert "usually just one" in COMPOSE_SYSTEM_PROMPT and "at least 4 strong photos" in COMPOSE_SYSTEM_PROMPT
+    assert "the strongest storyline of the theme" in COMPOSE_SYSTEM_PROMPT
+    assert "at least 4 strong photos" in COMPOSE_SYSTEM_PROMPT
+    assert "otherwise the other storyline goes to stories" in COMPOSE_SYSTEM_PROMPT
 
 
 def test_compose_prompt_requires_different_views_by_principle():
@@ -219,4 +239,17 @@ def test_compose_prompt_stories_quality_bar():
 
 def test_compose_prompt_puts_aesthetics_and_style_first():
     assert "first of all by aesthetics" in COMPOSE_SYSTEM_PROMPT
-    assert "main criterion" in COMPOSE_STYLE_BLOCK and "not part of the style" in COMPOSE_STYLE_BLOCK
+    assert "main criterion" in COMPOSE_STYLE_BLOCK
+
+
+def test_compose_prompt_post_and_stories():
+    # D13: пост — сильнейший сюжет до 5 кадров, stories — лучшие из оставшихся в порядке съёмки; D14 — портрет-обложка
+    from photo_chooser.config import PostsCfg
+
+    limits = PostsCfg()
+    text = COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels, carousel_size=limits.carousel_size,
+                                        stories=limits.stories)
+    for phrase in ("at most 1 carousel(s) of at most 5 photos", "usually 3-5", "posed portrait of the traveller",
+                   "stories are arranged by shooting time"):
+        assert phrase in text
+    assert "presence or absence of people" not in COMPOSE_STYLE_BLOCK

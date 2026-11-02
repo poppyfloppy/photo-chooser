@@ -137,8 +137,8 @@ DEFAULT_PRICING = {
 class PostsCfg(_Strict):
     """Посты на тему (SPEC FR-4): лимиты каруселей ленты и stories."""
 
-    carousels: int = Field(default=2, ge=0)
-    carousel_size: int = Field(default=9, ge=1)
+    carousels: int = Field(default=1, ge=0)
+    carousel_size: int = Field(default=5, ge=1)
     stories: int = Field(default=9, ge=0)
 
 
@@ -170,9 +170,16 @@ class Thresholds(_Strict):
     duplicate_distance: float = 0.45
     duplicate_window_s: float = 60
     min_theme_relevance: int = 5
-    min_feed_score: int = 6
-    min_stories_score: int = 4
+    min_score: int = 5  # сила кадра для кандидатов сборки и раскладки по оценкам (FR-4.1, FR-4.4)
     live_frame_margin: float = 0.15
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed_keys(cls, data):
+        if isinstance(data, dict) and {"min_feed_score", "min_stories_score"} & data.keys():
+            raise ConfigError("thresholds.min_feed_score и min_stories_score заменены на thresholds.min_score "
+                              "(версия 0.4): одна сила кадра для поста и stories")
+        return data
 
 
 class StyleCfg(_Strict):

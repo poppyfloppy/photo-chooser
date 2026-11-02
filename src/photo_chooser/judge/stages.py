@@ -68,8 +68,7 @@ class ScreenMatch(BaseModel):
 class ScreenItem(BaseModel):
     id: str
     matches: list[ScreenMatch]
-    feed_score: int
-    stories_score: int
+    score: int
 
 
 class ScreenOutput(BaseModel):
@@ -79,8 +78,8 @@ class ScreenOutput(BaseModel):
 class JudgeItem(BaseModel):
     id: str
     matches_theme: bool
-    feed_score: int
-    stories_score: int
+    score: int
+    interesting: bool
     reason: str
     crop_feed: str  # обязательные: у вертикальных кадров модель возвращает пустую строку
     crop_stories: str
@@ -269,8 +268,7 @@ class ScreenRunner:
                 if 1 <= m.theme <= len(themes):
                     key = themes[m.theme - 1].screen_key()
                     relevance[key] = max(relevance.get(key, 0), _clamp(m.relevance))
-            return Screening(uuid=a.uuid, relevance=relevance, feed_score=_clamp(item.feed_score),
-                             stories_score=_clamp(item.stories_score))
+            return Screening(uuid=a.uuid, relevance=relevance, score=_clamp(item.score))
 
         return _parse_group(response, group, ScreenOutput, convert)
 
@@ -317,8 +315,8 @@ class JudgeRunner:
 
         def convert(a: Asset, item: JudgeItem) -> Judgment:
             vertical = orientation(a) == "vertical"  # вертикальный кадр кадрировать не нужно
-            return Judgment(uuid=a.uuid, matches_theme=bool(item.matches_theme), feed_score=_clamp(item.feed_score),
-                            stories_score=_clamp(item.stories_score), reason=item.reason.strip(),
+            return Judgment(uuid=a.uuid, matches_theme=bool(item.matches_theme), score=_clamp(item.score),
+                            reason=item.reason.strip(), interesting=bool(item.interesting),
                             crop_feed="" if vertical else item.crop_feed.strip(),
                             crop_stories="" if vertical else item.crop_stories.strip())
 
@@ -477,8 +475,9 @@ class ComposeRunner:
             with objc.autorelease_pool():
                 data = base64.standard_b64encode(self.preview(a)).decode()
             reason = " ".join(f.reason.split())
-            content.append({"type": "text", "text": f"id: c{i:02d} ({orientation(a)}) · лента {_num(f.feed_score)} · "
-                                                    f"stories {_num(f.stories_score)} · «{reason}»"})
+            mark = " · интересное" if f.interesting else ""
+            content.append({"type": "text", "text": f"id: c{i:02d} ({orientation(a)}) · сила {_num(f.score)}{mark} · "
+                                                    f"«{reason}»"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
         response = call_model(self.client, self.model, self.effort, system, content, ComposeOutput, self.notify)
@@ -496,7 +495,7 @@ class ComposeRunner:
 def compose_input_fingerprint(cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
                               style: "StyleContext | None") -> str:
     """Отпечаток входа сборки: кандидаты по порядку с оценками, лимиты и профиль стиля (FR-9.3)."""
-    parts = [f"{a.uuid}:{_num(facts[a.uuid].feed_score)}:{_num(facts[a.uuid].stories_score)}" for a in cands]
+    parts = [f"{a.uuid}:{_num(facts[a.uuid].score)}:{int(facts[a.uuid].interesting)}" for a in cands]
     parts += [f"limits:{limits.carousels}/{limits.carousel_size}/{limits.stories}",
               f"style:{style.fingerprint if style else '-'}"]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]

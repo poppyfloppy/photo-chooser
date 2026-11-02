@@ -103,11 +103,11 @@ def handler(match=True, fail_theme=None, compose=None):
         if output_model_of(kw) is ScreenOutput:
             n_themes = len(re.findall(r"^\d+\. ", last_text(content), flags=re.M))
             matches = [ScreenMatch(theme=t, relevance=8) for t in range(1, n_themes + 1)] if match else []
-            return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches, feed_score=6, stories_score=5)
+            return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches, score=6)
                                                      for i in ids]))
         if fail_theme and f"«{fail_theme}" in last_text(content):
             return api_error()
-        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, feed_score=7, stories_score=5,
+        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=7, interesting=False,
                                                           reason="подходит", crop_feed="", crop_stories="") for i in ids]))
     return h
 
@@ -521,7 +521,8 @@ def test_compose_cached_on_rerun(tmp_path):
 
 def test_dry_run_estimate_includes_compose(tmp_path):
     album = Album(tmp_path, n=5)
-    few = AppConfig(output_dir=tmp_path / "out", cloud=AppConfig().cloud.model_copy(update={"compose_candidates": 1}))
+    few = AppConfig(output_dir=tmp_path / "out", cloud=AppConfig().cloud.model_copy(update={"compose_candidates": 1}),
+                    posts=PostsCfg(stories=0))  # без «интересных» сверх окна (FR-4.1) окно — ровно compose_candidates
     small, _ = _run(album, _trip(GIZA), few, Cache(tmp_path / "a.sqlite"), dry_run=True)
     full, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "b.sqlite"), dry_run=True)
     assert full.estimate_usd > small.estimate_usd > 0
@@ -534,9 +535,9 @@ def test_compose_refusal_fallback_skips_off_theme(tmp_path):
     def h(n, kw):
         if output_model_of(kw) is JudgeOutput:
             ids = ids_in(kw["messages"][0]["content"])
-            return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=i in ("p01", "p03"), feed_score=9,
-                                                              stories_score=9, reason="r", crop_feed="", crop_stories="")
-                                                    for i in ids]))
+            return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=i in ("p01", "p03"), score=9,
+                                                              interesting=False, reason="r", crop_feed="",
+                                                              crop_stories="") for i in ids]))
         return base(n, kw)
 
     result, _ = _run(album, _trip(GIZA), _cfg(tmp_path, feed=9, stories=9), Cache(tmp_path / "c.sqlite"),
@@ -571,3 +572,14 @@ def test_run_logs_compose_fallback(tmp_path):
     _, logs = _logged_run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
     assert any(line.startswith("  сборка не удалась — разложено по оценкам (BadRequestError") for line in logs)
     assert logs[-1].startswith("  посты: каруселей 1 (3)")
+
+
+def test_dry_run_estimate_includes_interesting_window(tmp_path):
+    # FR-7.1: до второй ступени сборка оценивается с «интересными» сверх окна — до posts.stories превью
+    album = Album(tmp_path, n=5)
+    cloud = AppConfig().cloud.model_copy(update={"compose_candidates": 1})
+    no_extra = AppConfig(output_dir=tmp_path / "out", cloud=cloud, posts=PostsCfg(stories=0))
+    with_extra = AppConfig(output_dir=tmp_path / "out", cloud=cloud, posts=PostsCfg(stories=9))
+    small, _ = _run(album, _trip(GIZA), no_extra, Cache(tmp_path / "a.sqlite"), dry_run=True)
+    large, _ = _run(album, _trip(GIZA), with_extra, Cache(tmp_path / "b.sqlite"), dry_run=True)
+    assert large.estimate_usd > small.estimate_usd
