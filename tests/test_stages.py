@@ -107,9 +107,17 @@ def test_screen_schema_single_score():
 
 
 def test_screen_prompt_portrait_without_people_bias():
-    assert "posed portrait of the traveller" in SCREEN_SYSTEM_PROMPT
+    assert "portrait of the traveller" in SCREEN_SYSTEM_PROMPT
     assert "without people" not in SCREEN_SYSTEM_PROMPT
     assert "feed_score" not in SCREEN_SYSTEM_PROMPT
+
+
+def test_screen_prompt_harmonious_portrait():
+    # приёмка 0.4 (D14): портрет — плюс, только если кадр гармоничен; та же рубрика, что на второй ступени (FR-3 п.5)
+    assert SCREEN_PROMPT_VERSION == "screen-4"
+    for phrase in ("only when the photo is harmonious", "small against the place", "bokeh", "feet or legs cut off",
+                   "never raise a photo just because the traveller is in it"):
+        assert phrase in SCREEN_SYSTEM_PROMPT
 
 
 def test_screen_request_lists_album_and_themes():
@@ -526,7 +534,7 @@ def test_judge_prompt_puts_aesthetics_and_style_first():
     # приёмка 0.3: вес эстетики и стиля поднят над техникой и познавательностью (FR-3 п.8, FR-11.4)
     from photo_chooser.judge.prompts import STYLE_BLOCK
 
-    assert JUDGE_PROMPT_VERSION == "judge-6"
+    assert JUDGE_PROMPT_VERSION == "judge-7"
     assert JUDGE_SYSTEM_PROMPT.count("Aesthetics come first") == 1  # одна сила кадра (D13)
     assert "main criterion" in STYLE_BLOCK and "as important as composition" not in STYLE_BLOCK
 
@@ -539,7 +547,7 @@ def test_judge_schema_score_and_interesting():
 def test_judge_prompt_portrait_and_interesting():
     from photo_chooser.judge.prompts import STYLE_BLOCK
 
-    for phrase in ("posed portrait of the traveller", "random tourists", "interesting: true"):
+    for phrase in ("portrait of the traveller", "random tourists", "interesting: true"):
         assert phrase in JUDGE_SYSTEM_PROMPT
     for phrase in ("without people", "feed_score", "stories_score"):
         assert phrase not in JUDGE_SYSTEM_PROMPT
@@ -562,3 +570,11 @@ def test_judge_score_clamped_and_interesting_kept():
     client = FakeClient(judge_handler(score=11, interesting=True))
     [j] = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(1)).items
     assert j.score == 10 and j.interesting is True
+
+
+def test_judge_prompt_harmonious_portrait():
+    # приёмка 0.4 (D14): обрезанные ноги и неловкая поза — слабый кадр, удачный портрет — небольшая фигура на фоне
+    # места или настоящий портрет с боке и красивым светом
+    for phrase in ("only when the photo is harmonious", "small against the place", "whole figure", "bokeh",
+                   "feet or legs cut off", "awkward pose", "never raise a photo just because the traveller is in it"):
+        assert phrase in JUDGE_SYSTEM_PROMPT

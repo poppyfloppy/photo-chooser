@@ -212,7 +212,7 @@ def test_compose_empty_answer_is_valid_nothing(tmp_path):
 
 
 def test_compose_prompt_version_bumped():
-    assert COMPOSE_PROMPT_VERSION == "compose-3"  # сборки по прежним правилам в кэше не годятся
+    assert COMPOSE_PROMPT_VERSION == "compose-4"  # сборки по прежним правилам в кэше не годятся
 
 
 def test_compose_prompt_allows_leaving_candidates_out():
@@ -249,7 +249,13 @@ def test_compose_prompt_post_and_stories():
     limits = PostsCfg()
     text = COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels, carousel_size=limits.carousel_size,
                                         stories=limits.stories)
-    for phrase in ("at most 1 carousel(s) of at most 5 photos", "usually 3-5", "posed portrait of the traveller",
+    for phrase in ("at most 1 carousel(s) of at most 5 photos", "usually 3-5", "portrait of the traveller",
                    "stories are arranged by shooting time"):
         assert phrase in text
     assert "presence or absence of people" not in COMPOSE_STYLE_BLOCK
+
+
+def test_compose_prompt_harmonious_cover():
+    # приёмка 0.4 (D14): обложка-портрет — только гармоничный, портрет ради портрета не добавляется
+    assert "only when it is harmonious" in COMPOSE_SYSTEM_PROMPT
+    assert "do not add a portrait just to have one" in COMPOSE_SYSTEM_PROMPT
