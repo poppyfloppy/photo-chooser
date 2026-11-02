@@ -238,3 +238,9 @@ def test_load_style_fingerprint_depends_on_kinds(tmp_path):
     one_three = style.load_style(path, lib, _cfg(reference_feed=1, reference_stories=3))
     assert _kinds(one_three) == ["feed", "stories", "stories", "stories"]
     assert two_two.fingerprint != one_three.fingerprint
+
+
+def test_style_prompt_allows_author_portrait():
+    # D14: постановочный портрет автора на фоне места — допустимая черта ленты
+    assert "posed portrait of the author" in style.STYLE_SYSTEM_PROMPT
+    assert "do not mention people, the author" not in style.STYLE_SYSTEM_PROMPT

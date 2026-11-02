@@ -30,7 +30,7 @@ You get published posts, each labelled with its month (newest first), and screen
 Write a description of the page's style in Russian, about 300 words, in Markdown with two sections titled «Лента» and «Stories».
 In each section cover: processing and colour grading, light, composition and framing, typical subjects, and what never appears on the page.
 Give recent posts more weight than old ones: the style may have changed over the years.
-Whether people appear in the photos is not part of the style: do not mention people, the author or selfies as a trait of the page.
+Whether people appear in the photos is not part of the style; the one exception is a posed portrait of the author in front of the place, which you may name as a trait of the feed. Do not describe selfies or other people as a trait of the page.
 Describe the style only; do not describe individual photos. Output only the description."""
 
 STYLE_REFERENCE_LABELS = {
