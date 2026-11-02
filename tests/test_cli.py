@@ -101,12 +101,13 @@ def test_albums_lists_titles_and_counts(env):
     assert "«Египет 2026» — 1 фото" in result.output and "«Кофе» — 30 фото" in result.output
 
 
-def test_run_no_cloud_writes_shortlist(env):
+def test_run_no_cloud_writes_posts(env):
     tmp_path, library, _ = env
     result = runner.invoke(cli.app, ["run", "--album", "Египет 2026", "--theme", "Гиза", "--query", "пирамиды",
                                      "--no-cloud"])
     assert result.exit_code == 0, result.output
     assert str(tmp_path / "out" / "Египет 2026") in result.output
+    assert "«Гиза»: каруселей 1 (1), stories 0" in result.output
     assert library.exported == ["A1"]
 
 

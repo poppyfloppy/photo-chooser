@@ -134,9 +134,12 @@ DEFAULT_PRICING = {
 }
 
 
-class ShortlistCfg(_Strict):
-    feed: int = Field(default=20, ge=0)
-    stories: int = Field(default=40, ge=0)
+class PostsCfg(_Strict):
+    """Посты на тему (SPEC FR-4): лимиты каруселей ленты и stories."""
+
+    carousels: int = Field(default=2, ge=0)
+    carousel_size: int = Field(default=9, ge=1)
+    stories: int = Field(default=9, ge=0)
 
 
 class CloudCfg(_Strict):
@@ -148,6 +151,7 @@ class CloudCfg(_Strict):
     candidates_per_theme: int = Field(default=100, ge=1)
     preview_long_side_px: int = Field(default=1024, ge=64)
     group_size: int = Field(default=20, ge=1)
+    compose_candidates: int = Field(default=30, ge=1)  # сильнейших кадров темы в запросе сборки (FR-4.1)
 
     @field_validator("pricing", mode="before")
     @classmethod
@@ -179,12 +183,21 @@ class StyleCfg(_Strict):
     screenshots_album: str | None = None
     sample: int = Field(default=40, ge=1)
     model: str = "claude-opus-5-5"
-    reference_images: int = Field(default=2, ge=0)
+    reference_feed: int = Field(default=2, ge=0)  # первые скриншоты альбома — гриды ленты
+    reference_stories: int = Field(default=2, ge=0)  # следующие — stories
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed_keys(cls, data):
+        if isinstance(data, dict) and "reference_images" in data:
+            raise ConfigError("style.reference_images заменён на reference_feed и reference_stories (версия 0.3): "
+                              "сколько первых скриншотов альбома — гриды ленты и сколько следующих — stories")
+        return data
 
 
 class AppConfig(_Strict):
     output_dir: Path = Field(default=Path("~/Pictures/photo-chooser"), validate_default=True)
-    shortlist: ShortlistCfg = Field(default_factory=ShortlistCfg)
+    posts: PostsCfg = Field(default_factory=PostsCfg)
     cloud: CloudCfg = Field(default_factory=CloudCfg)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     style: StyleCfg = Field(default_factory=StyleCfg)
@@ -193,6 +206,14 @@ class AppConfig(_Strict):
     @classmethod
     def _expand(cls, v: Path) -> Path:
         return v.expanduser()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed_keys(cls, data):
+        if isinstance(data, dict) and "shortlist" in data:
+            raise ConfigError("shortlist.feed/stories заменены на posts.carousels, posts.carousel_size и posts.stories "
+                              "(версия 0.3): лента — до 2 каруселей по 9 кадров, stories — до 9")
+        return data
 
 
 def _describe(e: ValidationError) -> str:

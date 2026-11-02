@@ -129,42 +129,45 @@ def save_profile(path: Path, text: str) -> None:
 @dataclass(frozen=True)
 class StyleContext:
     text: str
-    references: list[bytes]  # JPEG скриншотов-образцов при SCREENSHOT_LONG_SIDE
-    fingerprint: str  # 8 hex: текст профиля и uuid выбранных скриншотов — часть ключа кэша второй ступени
+    references: list[tuple[str, bytes]]  # ("feed" | "stories", JPEG при SCREENSHOT_LONG_SIDE) — FR-11.4
+    fingerprint: str  # 8 hex: текст профиля и вид+uuid выбранных скриншотов — часть ключа кэша второй ступени
     created_at: datetime
-    extra_tokens: int  # входные токены профиля и образцов в каждой группе второй ступени
+    extra_tokens: int  # входные токены профиля и образцов в каждом запросе второй ступени и сборки
     warnings: list[str] = field(default_factory=list)
 
 
 def load_style(path: Path, library: PhotosLibrary, cfg: AppConfig) -> StyleContext | None:
-    """Профиль и первые reference_images скриншотов в порядке альбома; нет файла или он пуст — None."""
+    """Профиль и скриншоты в порядке альбома: первые reference_feed — гриды ленты, следующие reference_stories —
+    stories; при нехватке укорачиваются stories. Нет файла или он пуст — None."""
     if not path.exists():
         return None
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         return None
     sc, warnings = cfg.style, []
+    need = sc.reference_feed + sc.reference_stories
     shots: list[Asset] = []
-    if sc.reference_images and sc.screenshots_album:
+    if need and sc.screenshots_album:
         try:
             album = resolve_album(sc.screenshots_album, library.albums())
-            shots = library.assets(album, album_order=True)[:sc.reference_images]
+            shots = library.assets(album, album_order=True)[:need]
         except (AlbumNotFound, AlbumAmbiguous) as e:
             warnings.append(f"Скриншоты-образцы не приложены: {e}")
         else:
-            if len(shots) < sc.reference_images:
-                warnings.append(f"В альбоме «{sc.screenshots_album}» скриншотов {len(shots)} из "
-                                f"{sc.reference_images} (style.reference_images)")
+            if len(shots) < need:
+                warnings.append(f"В альбоме «{sc.screenshots_album}» скриншотов {len(shots)} из {need} "
+                                f"(style.reference_feed + reference_stories)")
     references, used = [], []
-    for a in shots:
+    for i, a in enumerate(shots):
         preview = library.preview(a, SCREENSHOT_LONG_SIDE)
         if preview is None:
             warnings.append(f"Нет превью скриншота-образца {a.filename}")
             continue
-        references.append(images.jpeg_bytes(preview, SCREENSHOT_LONG_SIDE))
-        used.append(a)
-    fingerprint = hashlib.sha256("|".join([text] + [a.uuid for a in used]).encode("utf-8")).hexdigest()[:8]
-    extra = sum(image_tokens(a.width, a.height, SCREENSHOT_LONG_SIDE) for a in used) + len(text) // 2 + 100
+        kind = "feed" if i < sc.reference_feed else "stories"
+        references.append((kind, images.jpeg_bytes(preview, SCREENSHOT_LONG_SIDE)))
+        used.append((kind, a))
+    fingerprint = hashlib.sha256("|".join([text] + [f"{k}:{a.uuid}" for k, a in used]).encode("utf-8")).hexdigest()[:8]
+    extra = sum(image_tokens(a.width, a.height, SCREENSHOT_LONG_SIDE) for _, a in used) + len(text) // 2 + 100
     return StyleContext(text=text, references=references, fingerprint=fingerprint,
                         created_at=datetime.fromtimestamp(path.stat().st_mtime), extra_tokens=extra,
                         warnings=warnings)

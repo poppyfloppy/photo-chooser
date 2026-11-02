@@ -56,3 +56,10 @@ def test_estimate_adds_judge_extra_tokens():
     plain = estimate_run_usd(0, [100], cfg, "claude-haiku-5-5", "claude-opus-5-5")
     styled = estimate_run_usd(0, [100], cfg, "claude-haiku-5-5", "claude-opus-5-5", judge_extra_tokens=4000)
     assert styled - plain == pytest.approx(5 * 4000 * 4.00 / 1e6)
+
+
+def test_estimate_includes_compose():
+    cfg = CloudCfg()
+    expected = (30 * (1049 + 60) + 500) * 4.00 / 1e6 + 1500 * 20.00 / 1e6
+    assert estimate_run_usd(0, [], cfg, "claude-haiku-5-5", "claude-opus-5-5", n_compose=[30, 0]) == \
+        pytest.approx(expected)

@@ -5,13 +5,14 @@
 """
 
 import base64
+import hashlib
 import math
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 import anthropic
 import objc
@@ -19,18 +20,29 @@ import pydantic
 from pydantic import BaseModel
 
 from photo_chooser.cache import Cache
-from photo_chooser.config import CloudCfg, ConfigError, Theme, themes_key
-from photo_chooser.judge.cost import HAIKU_PRICE_LIMIT_TOKENS, group_input_tokens, price_for, usage_usd
+from photo_chooser.config import AppConfig, CloudCfg, ConfigError, PostsCfg, Theme, themes_key
+from photo_chooser.judge.cost import (
+    COMPOSE_LABEL_TOKENS,
+    HAIKU_PRICE_LIMIT_TOKENS,
+    group_input_tokens,
+    price_for,
+    usage_usd,
+)
 from photo_chooser.judge.prompts import (
+    COMPOSE_PROMPT_VERSION,
+    COMPOSE_SCREENSHOTS_NOTE,
+    COMPOSE_STYLE_BLOCK,
+    COMPOSE_SYSTEM_PROMPT,
     JUDGE_PROMPT_VERSION,
     JUDGE_SYSTEM_PROMPT,
     SCREEN_PROMPT_VERSION,
     SCREEN_SYSTEM_PROMPT,
     STYLE_BLOCK,
-    STYLE_REFERENCE_LABEL,
+    STYLE_REFERENCE_LABELS,
     STYLE_SCREENSHOTS_NOTE,
 )
 from photo_chooser.models import Asset, Judgment, Screening
+from photo_chooser.select import Posts, ShotFacts, validate_composition
 
 if TYPE_CHECKING:
     from photo_chooser.style import StyleContext
@@ -74,6 +86,27 @@ class JudgeItem(BaseModel):
 
 class JudgeOutput(BaseModel):
     items: list[JudgeItem]
+
+
+class ComposeSlide(BaseModel):
+    id: str
+    alternatives: list[str]
+
+
+class ComposeCarousel(BaseModel):
+    title: str
+    slides: list[ComposeSlide]
+
+
+class ComposeStory(BaseModel):
+    id: str
+    kind: Literal["best", "interesting"]
+    hint: str
+
+
+class ComposeOutput(BaseModel):
+    carousels: list[ComposeCarousel]
+    stories: list[ComposeStory]
 
 
 @dataclass
@@ -207,6 +240,16 @@ class ScreenRunner:
         return _parse_group(response, group, ScreenOutput, convert)
 
 
+def reference_content(style: "StyleContext | None") -> list[dict]:
+    """Скриншоты страницы перед кандидатами: у каждого подпись — грид ленты или stories (FR-11.4)."""
+    content: list[dict] = []
+    for kind, data in (style.references if style else []):
+        content.append({"type": "text", "text": STYLE_REFERENCE_LABELS[kind]})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                    "data": base64.standard_b64encode(data).decode()}})
+    return content
+
+
 def judge_prompt_version(style: "StyleContext | None") -> str:
     """Версия промпта второй ступени для ключа кэша: со стилем в неё входит отпечаток профиля (FR-9.3)."""
     return JUDGE_PROMPT_VERSION if style is None else f"{JUDGE_PROMPT_VERSION}/style-{style.fingerprint}"
@@ -232,10 +275,7 @@ class JudgeRunner:
             system += "\n\n" + STYLE_BLOCK.format(text=self.style.text)
             if self.style.references:  # оговорка о скриншотах — только когда они приложены
                 system += "\n" + STYLE_SCREENSHOTS_NOTE
-                content.append({"type": "text", "text": STYLE_REFERENCE_LABEL})
-                content += [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                         "data": base64.standard_b64encode(ref).decode()}}
-                            for ref in self.style.references]
+            content += reference_content(self.style)
         content += image_content(group, self.preview, with_orientation=True)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
         response = call_model(self.client, self.model, self.effort, system, content, JudgeOutput)
@@ -336,3 +376,107 @@ def run_judge(runner: JudgeRunner, cache: Cache, theme: Theme, assets: list[Asse
     return _run_stage(todo, groups, cached, lambda g: runner.run_group(theme, g),
                       lambda items: cache.put_judgments(items, key, runner.model, version),
                       runner.model, cache, cfg, album_uuid, runner.extra_input_tokens)
+
+
+
+# --- сборка постов (SPEC FR-4.2–FR-4.4) -------------------------------------------------------
+
+
+@dataclass
+class ComposeResult:
+    output: ComposeOutput | None  # None — отказ или неразборчивый ответ
+    refused: bool
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass
+class ComposeOutcome:
+    posts: Posts | None  # None — сборка не удалась, конвейер раскладывает по оценкам (FR-4.4)
+    usd: float
+    from_cache: bool
+    refused: bool
+    note: str = ""  # почему сборка не удалась, если не отказ
+
+
+def _num(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else f"{x:.2f}"
+
+
+def _compose_style_system(system: str, style: "StyleContext | None") -> str:
+    """Стиль для сборки — без языка оценок: сборка выбирает кадры, а не ставит им баллы."""
+    if style is None:
+        return system
+    system += "\n\n" + COMPOSE_STYLE_BLOCK.format(text=style.text)
+    return system + ("\n" + COMPOSE_SCREENSHOTS_NOTE if style.references else "")
+
+
+class ComposeRunner:
+    def __init__(self, client, model: str, effort: str, preview: Callable[[Asset], bytes],
+                 style: "StyleContext | None" = None):
+        self.client, self.model, self.effort, self.preview, self.style = client, model, effort, preview, style
+
+    def run(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg) -> ComposeResult:
+        system = _compose_style_system(COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels,
+                                                            carousel_size=limits.carousel_size,
+                                                            stories=limits.stories), self.style)
+        content = reference_content(self.style)
+        for i, a in enumerate(cands, 1):
+            f = facts[a.uuid]
+            with objc.autorelease_pool():
+                data = base64.standard_b64encode(self.preview(a)).decode()
+            reason = " ".join(f.reason.split())
+            content.append({"type": "text", "text": f"id: c{i:02d} ({orientation(a)}) · лента {_num(f.feed_score)} · "
+                                                    f"stories {_num(f.stories_score)} · «{reason}»"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
+        content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
+        response = call_model(self.client, self.model, self.effort, system, content, ComposeOutput)
+        tokens = dict(input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
+        if response.stop_reason == "refusal":
+            return ComposeResult(output=None, refused=True, **tokens)
+        text = "".join(block.text for block in response.content if block.type == "text")
+        try:
+            output = ComposeOutput.model_validate_json(text) if text else None
+        except pydantic.ValidationError:
+            output = None
+        return ComposeResult(output=output, refused=False, **tokens)
+
+
+def compose_input_fingerprint(cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
+                              style: "StyleContext | None") -> str:
+    """Отпечаток входа сборки: кандидаты по порядку с оценками, лимиты и профиль стиля (FR-9.3)."""
+    parts = [f"{a.uuid}:{_num(facts[a.uuid].feed_score)}:{_num(facts[a.uuid].stories_score)}" for a in cands]
+    parts += [f"limits:{limits.carousels}/{limits.carousel_size}/{limits.stories}",
+              f"style:{style.fingerprint if style else '-'}"]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def run_compose(runner: ComposeRunner, cache: Cache, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts],
+                cfg: AppConfig, album_uuid: str) -> ComposeOutcome:
+    """Один запрос сборки на тему; ответ кэшируется, расход пишется сразу. Ошибки API поднимаются (FR-4.4)."""
+    if not cands:
+        return ComposeOutcome(posts=Posts([], []), usd=0.0, from_cache=False, refused=False)
+    ids = {f"c{i:02d}": a for i, a in enumerate(cands, 1)}
+    fingerprint = compose_input_fingerprint(cands, facts, cfg.posts, runner.style)
+    cache_key = (theme.key(), runner.model, COMPOSE_PROMPT_VERSION, fingerprint)
+    cached = cache.get_composition(*cache_key)
+    if cached is not None:
+        posts = validate_composition(ComposeOutput.model_validate_json(cached), ids, cfg.posts)
+        return ComposeOutcome(posts=posts, usd=0.0, from_cache=True, refused=False)
+    tokens = (group_input_tokens([(a.width, a.height) for a in cands], cfg.cloud.preview_long_side_px)
+              + COMPOSE_LABEL_TOKENS * len(cands) + (runner.style.extra_tokens if runner.style else 0))
+    if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
+        raise ValueError(f"Запрос сборки из {len(cands)} превью ≈ {tokens} входных токенов — больше ценового порога "
+                         f"{HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.compose_candidates.")
+    result = runner.run(theme, cands, facts, cfg.posts)
+    usd = usage_usd(result.input_tokens, result.output_tokens, price_for(cfg.cloud, runner.model))
+    cache.add_spend(album_uuid, runner.model, usd)
+    if result.output is None:
+        return ComposeOutcome(posts=None, usd=usd, from_cache=False, refused=result.refused,
+                              note="" if result.refused else "неразборчивый ответ")
+    posts = validate_composition(result.output, ids, cfg.posts)
+    answered = any(c.slides for c in result.output.carousels) or bool(result.output.stories)
+    if answered and not posts.carousels and not posts.stories:  # модель ответила, но ни одного известного кадра
+        return ComposeOutcome(posts=None, usd=usd, from_cache=False, refused=False, note="в ответе нет известных кадров")
+    cache.put_composition(*cache_key, result.output.model_dump_json())
+    return ComposeOutcome(posts=posts, usd=usd, from_cache=False, refused=False)

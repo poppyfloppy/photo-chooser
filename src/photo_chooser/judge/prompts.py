@@ -4,7 +4,7 @@
 """
 
 SCREEN_PROMPT_VERSION = "screen-2"
-JUDGE_PROMPT_VERSION = "judge-3"
+JUDGE_PROMPT_VERSION = "judge-4"
 
 SCREEN_SYSTEM_PROMPT = """You sort travel photos into the themes of one trip for an Instagram shortlist.
 You get the trip album name and a numbered list of themes written by the traveller, then photos, each preceded by its id.
@@ -20,6 +20,8 @@ For every photo (each is preceded by its id and orientation), judge it against t
 - matches_theme: whether the photo belongs to the theme.
 - feed_score (1-10): strength as an Instagram feed post — the trip's best shots: composition, light, visual impact, technical quality. Photos without people are often the strongest feed posts.
 - stories_score (1-10): suitability for Instagram stories — a lighter, less selective feed of the trip: good on-theme shots that tell the trip, including ones not strong enough for the feed. People are not required. Minor technical flaws are acceptable.
+- Judge feed_score and stories_score by the photo's potential after editing and cropping in the page's style: problems that editing fixes (exposure, colour and white balance, a tilted horizon, the crop) are not drawbacks; problems it cannot fix (motion blur, missed focus, blown highlights, a cut-off subject) are.
+- stories_score also rewards interesting moments that need a short explanatory text and therefore do not fit the feed; stories get lighter editing.
 - reason: one short sentence in the language of the theme on what makes the photo work or not. Do not treat the absence of people as a drawback.
 - crop_feed, crop_stories: for a horizontal or square photo, one short phrase each in the language of the theme on how to crop it to a vertical frame — 4:5 for the feed, 9:16 for stories — and what to keep in the frame. Empty strings for a vertical photo.
 Return exactly one item for every photo id."""
@@ -32,10 +34,29 @@ Give recent posts more weight than old ones: the style may have changed over the
 Whether people appear in the photos is not part of the style: do not mention people, the author or selfies as a trait of the page.
 Describe the style only; do not describe individual photos. Output only the description."""
 
-STYLE_REFERENCE_LABEL = "Reference: screenshots of the author's Instagram page (do not score them)"
+STYLE_REFERENCE_LABELS = {
+    "feed": "Reference: screenshot of the author's Instagram page — feed grid (do not score it)",
+    "stories": "Reference: screenshot of the author's Instagram page — stories (do not score it)",
+}
 
 STYLE_BLOCK = """Style of the author's Instagram page, written from their published posts and page screenshots:
 {text}
 Fit to this style — the feed section for feed_score, the stories section for stories_score — is one more criterion, as important as composition and light. The presence or absence of people is not part of the style."""
 
 STYLE_SCREENSHOTS_NOTE = "The screenshots at the start of the message show the page itself; do not score them."
+
+COMPOSE_PROMPT_VERSION = "compose-1"
+
+COMPOSE_SYSTEM_PROMPT = """You are a photo editor assembling Instagram posts for one theme of a trip from the author's best candidate photos.
+Each candidate is preceded by a label with its id, orientation, feed score ("лента") and stories score (1-10) and a short reason; the theme is given at the end. Judge photos by their potential after editing and cropping in the page's style.
+Build:
+- carousels: up to {carousels} feed carousels of at most {carousel_size} photos each. Split by meaning: each carousel is one storyline of the theme with a short title in the language of the theme. The first photo is the cover — the strongest and most characteristic shot of the storyline; then order the photos so they tell the story. Make a second carousel only if there are enough strong, distinct photos for two. Include only photos the author would publish: fewer is better, quality first.
+- alternatives: for each carousel photo, up to 2 other candidates showing the same moment from another angle, so the author can swap them.
+- stories: up to {stories} photos not used above — the best of the rest (kind "best", empty hint), and interesting moments that need a short explanatory text and so do not fit the feed (kind "interesting", hint: a short note for the author on what to explain, in the language of the theme — not a finished caption).
+Use every id at most once across carousels, alternatives and stories. Return ids exactly as in the labels (e.g. c07), without the orientation."""
+
+COMPOSE_STYLE_BLOCK = """Style of the author's Instagram page, written from their published posts and page screenshots:
+{text}
+Prefer photos that fit this style — the feed section for carousels, the stories section for stories. The presence or absence of people is not part of the style."""
+
+COMPOSE_SCREENSHOTS_NOTE = "The screenshots at the start of the message show the page itself; they are not candidates."

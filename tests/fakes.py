@@ -96,9 +96,11 @@ def fake_response(parsed=None, *, text=None, stop_reason="end_turn", input_token
 
 def output_model_of(kwargs: dict):
     """Какая ступень запрошена — по JSON-схеме в output_config.format."""
-    from photo_chooser.judge.stages import JudgeOutput, ScreenOutput
+    from photo_chooser.judge.stages import ComposeOutput, JudgeOutput, ScreenOutput
 
     schema = json.dumps(kwargs["output_config"]["format"]["schema"])
+    if "carousels" in schema:
+        return ComposeOutput
     return JudgeOutput if "matches_theme" in schema else ScreenOutput
 
 

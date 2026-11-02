@@ -329,7 +329,7 @@ def test_screen1_cache_not_reused_after_rubric_change(tmp_path):
     assert len(client.calls) == 1
 
 
-def _style(fp="ab12cd34", refs=(b"REF1", b"REF2")):
+def _style(fp="ab12cd34", refs=(("feed", b"REF1"), ("stories", b"REF2"))):
     from datetime import datetime
 
     from photo_chooser.style import StyleContext
@@ -346,9 +346,9 @@ def test_judge_with_style_request():
     assert call["system"].startswith(JUDGE_SYSTEM_PROMPT) and "Тёплый свет, минимализм." in call["system"]
     assert "do not score them" in call["system"]  # скриншоты приложены — оговорка на месте
     content = call["messages"][0]["content"]
-    assert content[0]["type"] == "text" and "Reference" in content[0]["text"]
-    assert [base64.b64decode(b["source"]["data"]) for b in content[1:3]] == [b"REF1", b"REF2"]
-    assert content[3]["text"] == "id: p01 (horizontal)"
+    assert "feed grid" in content[0]["text"] and "stories" in content[2]["text"]
+    assert [base64.b64decode(content[i]["source"]["data"]) for i in (1, 3)] == [b"REF1", b"REF2"]
+    assert content[4]["text"] == "id: p01 (horizontal)"
     assert ids_in(content) == ["p01", "p02"] and _sent_uuids(call)[2:] == ["U000", "U001"]
     assert runner.prompt_version == f"{JUDGE_PROMPT_VERSION}/style-ab12cd34" and runner.extra_input_tokens == 3500
 
@@ -461,3 +461,28 @@ def test_judge2_cache_not_reused_after_crop_advice(tmp_path):
     client = FakeClient(judge_handler())
     run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 1
+
+
+def test_judge3_cache_not_reused_after_potential_rubric(tmp_path):
+    # D12: оценка по потенциалу после обработки — оценки judge-3 пересчитываются
+    from photo_chooser.models import Judgment
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Judgment(uuid=a.uuid, matches_theme=True, feed_score=4, stories_score=4, reason="r") for a in assets]
+    cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-3")
+    client = FakeClient(judge_handler())
+    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    assert len(client.calls) == 1
+
+
+def test_judge_reference_labels_per_kind():
+    from photo_chooser.judge.prompts import STYLE_REFERENCE_LABELS
+
+    refs = (("feed", b"F1"), ("feed", b"F2"), ("stories", b"S1"))
+    client = FakeClient(judge_handler())
+    JudgeRunner(client, HAIKU, "medium", _preview, style=_style(refs=refs)).run_group(THEMES[0], _assets(1))
+    content = client.calls[0]["messages"][0]["content"]
+    labels = [content[i]["text"] for i in (0, 2, 4)]
+    assert labels == [STYLE_REFERENCE_LABELS["feed"], STYLE_REFERENCE_LABELS["feed"], STYLE_REFERENCE_LABELS["stories"]]
+    assert [base64.b64decode(content[i]["source"]["data"]) for i in (1, 3, 5)] == [b"F1", b"F2", b"S1"]
+    assert content[6]["text"] == "id: p01 (horizontal)"

@@ -1,13 +1,14 @@
-"""report.md по теме: шапка для сравнения прогонов, таблица шорт-листа и сводка (SPEC FR-6.3)."""
+"""report.md по теме: шапка для сравнения прогонов, таблицы каруселей и stories, сводка (SPEC FR-6.3)."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from photo_chooser.config import Theme
-from photo_chooser.export import Assembled, ExportedItem
+from photo_chooser.export import ExportedPosts, ExportedShot
+from photo_chooser.models import Asset
+from photo_chooser.select import ShotFacts
 
-LIST_TITLES = {"feed": "лента", "stories": "stories"}
 
 
 @dataclass
@@ -38,6 +39,8 @@ class ThemeStats:
     usd_judge: float
     usd_album_total: float
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (файл, причина) — пропущенные до отбора
+    sent_to_compose: int = 0  # кандидатов в запросе сборки постов (FR-4.1)
+    usd_compose: float = 0.0
 
 
 def _cell(text: str) -> str:
@@ -46,13 +49,6 @@ def _cell(text: str) -> str:
 
 def _score(score) -> str:
     return f"{score:.2f}" if isinstance(score, float) else str(score)
-
-
-def _orientation(item: ExportedItem) -> str:
-    a = item.asset
-    if a.width == a.height:
-        return "квадратная"
-    return "вертикальная" if a.is_vertical else "горизонтальная"
 
 
 def _theme_line(theme: Theme) -> str:
@@ -64,7 +60,26 @@ def _theme_line(theme: Theme) -> str:
     return "; ".join(parts)
 
 
-def write_report(path: Path, theme: Theme, header: ReportHeader, assembled: Assembled, stats: ThemeStats) -> None:
+# --- отчёт о постах (v0.3, FR-6.3) -----------------------------------------------------------
+
+STORY_KINDS = {"best": "лучшее", "interesting": "интересное"}
+
+
+def _orientation_of(a: Asset) -> str:
+    if a.width == a.height:
+        return "квадратная"
+    return "вертикальная" if a.is_vertical else "горизонтальная"
+
+
+def _scores(f: ShotFacts | None) -> str:
+    return f"{_score(f.feed_score)} / {_score(f.stories_score)}" if f else "—"
+
+
+def _files(shot: ExportedShot) -> str:
+    return ", ".join(shot.files)
+
+
+def _header_lines(theme: Theme, header: ReportHeader) -> list[str]:
     lines = [f"# {theme.name}", ""]
     if header.album:
         lines.append(f"- Альбом: «{header.album}»")
@@ -73,30 +88,48 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, assembled: Asse
     if header.screen_model is None and header.model is None:
         lines.append("- Модели: без облака (только локальные оценки)")
     else:
-        lines.append(f"- Первая ступень: {header.screen_model or '—'}; вторая ступень: {header.model or '—'}")
+        lines.append(f"- Первая ступень: {header.screen_model or '—'}; вторая ступень и сборка: {header.model or '—'}")
         lines.append(f"- effort: {header.effort or '—'}")
         lines.append(f"- Версия промпта: {header.prompt_versions or '—'}")
         if header.style:
             lines.append(f"- Стиль: {header.style}")
     lines.append("")
-    for w in header.warnings:
-        lines.append(f"> ⚠️ {w}")
-    if header.warnings:
+    lines += [f"> ⚠️ {w}" for w in header.warnings]
+    return lines + ([""] if header.warnings else [])
+
+
+def write_report(path: Path, theme: Theme, header: ReportHeader, posts: ExportedPosts,
+                       facts: dict[str, ShotFacts], stats: ThemeStats) -> None:
+    lines = _header_lines(theme, header)
+    lines += ["## Лента", ""]
+    if not posts.carousels:
+        lines += ["Каруселей нет — сильных кадров для ленты не нашлось.", ""]
+    for n, carousel in enumerate(posts.carousels, 1):
+        lines += [f"### Карусель {n} — {carousel.title}", "", f"Папка: `feed/{carousel.folder}/`", "",
+                  "| Слайд | Файл | Лента / stories | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for pos, slide in enumerate(carousel.slides, 1):
+            f = facts.get(slide.shot.asset.uuid)
+            alternatives = ", ".join(_files(alt) for alt in slide.alternatives) or "—"
+            lines.append(f"| {pos} | {_files(slide.shot)} | {_scores(f)} | {_orientation_of(slide.shot.asset)} "
+                         f"| {_cell('; '.join(slide.shot.notes))} | {_cell(f.reason) if f else '—'} "
+                         f"| {(_cell(f.crop_feed) if f else '') or '—'} | {alternatives} |")
+        lines.append("")
+    lines += ["## Stories", ""]
+    if not posts.stories:
+        lines += ["Stories нет.", ""]
+    else:
+        lines += ["| № | Файл | Лента / stories | Тип | Что пояснить | Причина | Кадрирование (9:16) |",
+                  "|---|---|---|---|---|---|---|"]
+        for pos, story in enumerate(posts.stories, 1):
+            f = facts.get(story.shot.asset.uuid)
+            lines.append(f"| {pos} | {_files(story.shot)} | {_scores(f)} | {STORY_KINDS.get(story.kind, story.kind)} "
+                         f"| {_cell(story.hint) or '—'} | {_cell(f.reason) if f else '—'} "
+                         f"| {(_cell(f.crop_stories) if f else '') or '—'} |")
         lines.append("")
 
-    lines += ["## Шорт-лист", "",
-              "| Ранг | Файл(ы) | Список | Оценка | Ориентация | Пометки | Причина | Кадрирование |",
-              "|---|---|---|---|---|---|---|---|"]
-    for item in assembled.feed + assembled.stories:
-        lines.append(f"| {item.rank} | {', '.join(item.files)} | {LIST_TITLES[item.list_name]} | {_score(item.score)} "
-                     f"| {_orientation(item)} | {_cell('; '.join(item.notes))} | {_cell(item.reason)} "
-                     f"| {_cell(item.crop) or '—'} |")
-    if not assembled.feed and not assembled.stories:
-        lines.append("| — | — | — | — | — | — | подходящих кадров нет | — |")
-    lines.append("")
-
-    shortfall = [f"лента {assembled.shortfall_feed}"] if assembled.shortfall_feed else []
-    shortfall += [f"stories {assembled.shortfall_stories}"] if assembled.shortfall_stories else []
+    sizes = " + ".join(str(len(c.slides)) for c in posts.carousels)
+    summary = f"каруселей {len(posts.carousels)}" + (f" ({sizes})" if sizes else "") + f", stories {len(posts.stories)}"
     lines += ["## Сводка", "",
               f"- Прочитано снимков: {stats.read}",
               f"- Без превью: {stats.no_preview}",
@@ -107,12 +140,13 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, assembled: Asse
               f"- Признано подходящими к теме на первой ступени: {'—' if stats.matched is None else stats.matched}",
               f"- Кандидатов на второй ступени: {stats.sent_to_judge} (из кэша: {stats.from_cache}, "
               f"без оценки: {stats.unjudged})",
+              f"- Отправлено в сборку: {stats.sent_to_compose}",
+              f"- Посты: {summary}",
               f"- Стоимость: первая ступень ${stats.usd_screen:.4f} (общая на запуск), "
-              f"вторая ступень ${stats.usd_judge:.4f} (по теме); накоплено по альбому ${stats.usd_album_total:.2f}",
-              f"- Недобор: {', '.join(shortfall) if shortfall else 'нет'}",
+              f"вторая ступень ${stats.usd_judge:.4f}, сборка ${stats.usd_compose:.4f} (по теме); "
+              f"накоплено по альбому ${stats.usd_album_total:.2f}",
               ""]
-
-    skipped = [(a.filename, reason) for a, reason in assembled.failed] + list(stats.skipped)
+    skipped = [(a.filename, reason) for a, reason in posts.failed] + list(stats.skipped)
     if skipped:
         lines += ["## Пропущенные снимки", ""]
         lines += [f"- {name} — {reason}" for name, reason in skipped]

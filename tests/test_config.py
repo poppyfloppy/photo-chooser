@@ -122,7 +122,8 @@ def test_load_trip_unknown_key_is_config_error(tmp_path):
 
 def test_app_config_defaults_when_file_missing(tmp_path):
     cfg = load_app_config(tmp_path / "nope.yaml")
-    assert cfg.shortlist.feed == 20 and cfg.shortlist.stories == 40
+    assert (cfg.posts.carousels, cfg.posts.carousel_size, cfg.posts.stories) == (2, 9, 9)
+    assert cfg.cloud.compose_candidates == 30
     assert cfg.cloud.screen_model == "claude-haiku-5-5" and cfg.cloud.model == "claude-haiku-5-5"
     assert cfg.cloud.max_cost_usd_per_album == 5.0
     assert cfg.cloud.pricing["claude-opus-5-5"].output == 20.00
@@ -136,10 +137,10 @@ def test_app_config_defaults_when_file_missing(tmp_path):
 
 def test_app_config_partial_override(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("shortlist:\n  feed: 10\n", encoding="utf-8")
+    path.write_text("posts:\n  carousel_size: 5\n", encoding="utf-8")
     cfg = load_app_config(path)
-    assert cfg.shortlist.feed == 10
-    assert cfg.shortlist.stories == 40
+    assert cfg.posts.carousel_size == 5
+    assert cfg.posts.stories == 9
 
 
 def test_app_config_pricing_override_keeps_other_models(tmp_path):
@@ -191,7 +192,7 @@ def test_style_defaults(tmp_path):
     from datetime import date
 
     style = load_app_config(tmp_path / "nope.yaml").style
-    assert style.sample == 40 and style.reference_images == 2
+    assert style.sample == 40 and style.reference_feed == 2 and style.reference_stories == 2
     assert style.model == "claude-opus-5-5"
     assert style.since == date(2018, 1, 1)
     assert style.albums == [] and style.screenshots_album is None
@@ -206,8 +207,24 @@ def test_style_from_yaml(tmp_path):
     assert style.sample == 40
 
 
-def test_style_rejects_negative_reference_images(tmp_path):
+def test_style_rejects_negative_reference_feed(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("style:\n  reference_images: -1\n", encoding="utf-8")
+    path.write_text("style:\n  reference_feed: -1\n", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_app_config(path)
+
+
+def test_style_reference_images_key_is_config_error(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("style:\n  reference_images: 2\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_app_config(path)
+    assert "reference_feed" in str(e.value) and "reference_stories" in str(e.value)
+
+
+def test_shortlist_key_is_config_error(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("shortlist:\n  feed: 10\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_app_config(path)
+    assert "posts.carousels" in str(e.value)

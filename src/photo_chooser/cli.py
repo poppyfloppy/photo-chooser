@@ -21,7 +21,7 @@ STYLE_PATH = style.DEFAULT_STYLE_PATH
 STYLE_SPEND_KEY = "style"  # расход команды style — отдельно от бюджетов альбомов (FR-11.6)
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
-                  help="Шорт-лист кадров для Instagram из альбома Photos (лента и stories).")
+                  help="Посты для Instagram из альбома Photos: карусели ленты и stories по темам поездки.")
 
 
 def make_library():
@@ -98,7 +98,7 @@ def run_command(
     model: str | None = typer.Option(None, "--model", help="Модель второй ступени на этот запуск"),
     max_cost: float | None = typer.Option(None, "--max-cost", help="Лимит стоимости альбома на этот запуск, $"),
 ) -> None:
-    """Собрать шорт-лист по темам поездки."""
+    """Собрать посты по темам поездки."""
     with _exit_codes():
         flags = [album, theme, query, start, end, timezone]
         if trip_file is not None:
@@ -163,7 +163,7 @@ def _print_result(result: pipeline.RunResult, opts: pipeline.RunOptions, limit: 
         if opts.no_cloud:
             typer.echo("Режим без облака: стоимость $0")
         else:
-            typer.echo(f"Оценка стоимости запуска (обе ступени): ${result.estimate_usd:.2f}; уже потрачено по альбому "
+            typer.echo(f"Оценка стоимости запуска (обе ступени и сборка): ${result.estimate_usd:.2f}; уже потрачено по альбому "
                        f"${result.album_spend_usd:.2f}, лимит ${limit:.2f}")
         return False
     typer.echo(f"Готово: {result.run_dir}")
@@ -173,8 +173,10 @@ def _print_result(result: pipeline.RunResult, opts: pipeline.RunOptions, limit: 
             failed = True
             typer.echo(f"  «{o.theme.name}»: тема не обработана — {o.error}")
         else:
-            a = o.assembled
-            typer.echo(f"  «{o.theme.name}»: лента {len(a.feed)}, stories {len(a.stories)} — {o.report_path}")
+            p = o.posts
+            sizes = " + ".join(str(len(c.slides)) for c in p.carousels)
+            typer.echo(f"  «{o.theme.name}»: каруселей {len(p.carousels)}" + (f" ({sizes})" if sizes else "")
+                       + f", stories {len(p.stories)} — {o.report_path}")
     if not opts.no_cloud:
         typer.echo(f"Накоплено по альбому: ${result.album_spend_usd:.2f}")
     return failed
