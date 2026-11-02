@@ -37,8 +37,7 @@ def screen_candidates(assets: list[Asset], screenings: dict[str, Screening], qua
 
     def rank(a: Asset):
         s = screenings.get(a.uuid)
-        draft = max(s.feed_score, s.stories_score) if s else 0
-        return relevance(a), draft, quality.get(a.uuid, 0.0)
+        return relevance(a), s.score if s else 0, quality.get(a.uuid, 0.0)
 
     pool = assets if theme.interval_only else [a for a in assets if relevance(a) >= min_relevance]
     return sorted(pool, key=rank, reverse=True)[:limit]

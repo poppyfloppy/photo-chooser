@@ -39,12 +39,11 @@ class LocalFeatures:
 
 @dataclass(frozen=True)
 class Screening:
-    """Результат первой ступени: релевантность по ключам тем (Theme.screen_key()) и черновые оценки."""
+    """Результат первой ступени: релевантность по ключам тем (Theme.screen_key()) и черновая сила кадра."""
 
     uuid: str
     relevance: dict[str, int] = field(hash=False)
-    feed_score: int
-    stories_score: int
+    score: int
 
 
 @dataclass(frozen=True)

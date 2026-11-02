@@ -64,7 +64,7 @@ def _judge_reply(kw, pause=0.0):
 
 def _screen_reply(kw):
     return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=[ScreenMatch(theme=1, relevance=8)],
-                                                        feed_score=6, stories_score=5)
+                                                        score=6)
                                              for i in ids_in(kw["messages"][0]["content"])]))
 
 

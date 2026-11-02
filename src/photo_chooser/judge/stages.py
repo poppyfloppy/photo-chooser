@@ -68,8 +68,7 @@ class ScreenMatch(BaseModel):
 class ScreenItem(BaseModel):
     id: str
     matches: list[ScreenMatch]
-    feed_score: int
-    stories_score: int
+    score: int
 
 
 class ScreenOutput(BaseModel):
@@ -269,8 +268,7 @@ class ScreenRunner:
                 if 1 <= m.theme <= len(themes):
                     key = themes[m.theme - 1].screen_key()
                     relevance[key] = max(relevance.get(key, 0), _clamp(m.relevance))
-            return Screening(uuid=a.uuid, relevance=relevance, feed_score=_clamp(item.feed_score),
-                             stories_score=_clamp(item.stories_score))
+            return Screening(uuid=a.uuid, relevance=relevance, score=_clamp(item.score))
 
         return _parse_group(response, group, ScreenOutput, convert)
 

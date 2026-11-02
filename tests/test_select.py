@@ -19,8 +19,8 @@ def _j(a, feed=7, stories=5, matches=True, reason="r"):
     return Judgment(uuid=a.uuid, matches_theme=matches, feed_score=feed, stories_score=stories, reason=reason)
 
 
-def _s(a, rel=None, feed=5, stories=5):
-    return Screening(uuid=a.uuid, relevance=rel or {}, feed_score=feed, stories_score=stories)
+def _s(a, rel=None, score=5):
+    return Screening(uuid=a.uuid, relevance=rel or {}, score=score)
 
 
 def test_in_interval_converts_to_trip_timezone():
@@ -52,14 +52,22 @@ def test_screen_candidates_relevance_threshold():
 def test_screen_candidates_order_and_limit():
     a, b, c, d = (make_asset() for _ in range(4))
     k = GIZA.screen_key()
-    screenings = {a.uuid: _s(a, {k: 6}, feed=9, stories=2),
-                  b.uuid: _s(b, {k: 9}, feed=3, stories=3),
-                  c.uuid: _s(c, {k: 6}, feed=4, stories=9),
-                  d.uuid: _s(d, {k: 6}, feed=9, stories=1)}
+    screenings = {a.uuid: _s(a, {k: 6}, score=9),
+                  b.uuid: _s(b, {k: 9}, score=3),
+                  c.uuid: _s(c, {k: 6}, score=9),
+                  d.uuid: _s(d, {k: 6}, score=9)}
     quality = {a.uuid: 0.2, b.uuid: 0.1, c.uuid: 0.9, d.uuid: 0.5}
     got = screen_candidates([a, b, c, d], screenings, quality, GIZA, min_relevance=5, limit=3)
     # b — самая высокая релевантность; c (9, q .9) > d (9, q .5) > a (9, q .2)
     assert got == [b, c, d]
+
+
+def test_screen_candidates_rank_by_draft_score():
+    weak, strong = make_asset(), make_asset()
+    k = GIZA.screen_key()
+    screenings = {weak.uuid: _s(weak, {k: 8}, score=5), strong.uuid: _s(strong, {k: 8}, score=9)}
+    got = screen_candidates([weak, strong], screenings, {}, GIZA, min_relevance=5, limit=10)
+    assert got == [strong, weak]
 
 
 def test_screen_candidates_relevance_ignores_theme_interval():
@@ -73,7 +81,7 @@ def test_screen_candidates_relevance_ignores_theme_interval():
 
 def test_screen_candidates_interval_only_includes_unscreened():
     screened, unscreened = make_asset(), make_asset()
-    screenings = {screened.uuid: _s(screened, {}, feed=8, stories=2)}
+    screenings = {screened.uuid: _s(screened, {}, score=8)}
     quality = {screened.uuid: 0.1, unscreened.uuid: 0.9}
     got = screen_candidates([unscreened, screened], screenings, quality, DAY, min_relevance=5, limit=100)
     assert got == [screened, unscreened]  # черновая оценка первой ступени важнее локальной

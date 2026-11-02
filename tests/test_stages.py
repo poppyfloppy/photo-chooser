@@ -52,11 +52,11 @@ def _assets(n, start=None):
     return [make_asset(uuid=f"U{i:03d}", taken_at=t0 + timedelta(minutes=i)) for i in range(n)]
 
 
-def screen_handler(matches=lambda i: [ScreenMatch(theme=1, relevance=8)], feed=6, stories=5, **resp):
+def screen_handler(matches=lambda i: [ScreenMatch(theme=1, relevance=8)], score=6, **resp):
     def handler(n, kwargs):
         ids = ids_in(kwargs["messages"][0]["content"])
-        return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches(i), feed_score=feed,
-                                                            stories_score=stories) for i in ids]), **resp)
+        return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches(i), score=score) for i in ids]),
+                             **resp)
     return handler
 
 
@@ -85,15 +85,31 @@ def test_screen_maps_theme_numbers_to_keys():
     result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, a)
     assert result.items[0].uuid == "U000"
     assert result.items[0].relevance == {THEMES[1].screen_key(): 8}
-    assert (result.items[0].feed_score, result.items[0].stories_score) == (6, 5)
+    assert result.items[0].score == 6
 
 
 def test_screen_drops_unknown_theme_numbers_and_clamps():
     matches = [ScreenMatch(theme=9, relevance=7), ScreenMatch(theme=1, relevance=12), ScreenMatch(theme=0, relevance=6)]
-    client = FakeClient(screen_handler(matches=lambda i: matches, feed=0, stories=15))
+    client = FakeClient(screen_handler(matches=lambda i: matches))
     result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(1))
     assert result.items[0].relevance == {THEMES[0].screen_key(): 10}
-    assert (result.items[0].feed_score, result.items[0].stories_score) == (1, 10)
+
+
+@pytest.mark.parametrize("raw, clamped", [(0, 1), (11, 10)])
+def test_screen_score_clamped(raw, clamped):
+    client = FakeClient(screen_handler(score=raw))
+    result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(1))
+    assert result.items[0].score == clamped
+
+
+def test_screen_schema_single_score():
+    assert set(ScreenItem.model_fields) == {"id", "matches", "score"}
+
+
+def test_screen_prompt_portrait_without_people_bias():
+    assert "posed portrait of the traveller" in SCREEN_SYSTEM_PROMPT
+    assert "without people" not in SCREEN_SYSTEM_PROMPT
+    assert "feed_score" not in SCREEN_SYSTEM_PROMPT
 
 
 def test_screen_request_lists_album_and_themes():
@@ -321,8 +337,21 @@ def test_screen1_cache_not_reused_after_rubric_change(tmp_path):
     from photo_chooser.models import Screening
 
     cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
-    old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, feed_score=5, stories_score=8) for a in assets]
+    old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, score=5) for a in assets]
     cache.put_screenings(old, themes_key("Egypt.26", THEMES[:2]), HAIKU, "screen-1")
+    client = FakeClient(screen_handler())
+    run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
+               CloudCfg())
+    assert len(client.calls) == 1
+
+
+def test_screen2_cache_not_reused(tmp_path):
+    # две черновые оценки заменены одной силой кадра (D13) — оценки screen-2 не годятся
+    from photo_chooser.models import Screening
+
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, score=5) for a in assets]
+    cache.put_screenings(old, themes_key("Egypt.26", THEMES[:2]), HAIKU, "screen-2")
     client = FakeClient(screen_handler())
     run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
                CloudCfg())

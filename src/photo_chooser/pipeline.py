@@ -346,4 +346,4 @@ def _style_line(style: StyleContext) -> str:
 
 
 def _draft(s: Screening | None) -> float:
-    return float(max(s.feed_score, s.stories_score)) if s else 0.0
+    return float(s.score) if s else 0.0

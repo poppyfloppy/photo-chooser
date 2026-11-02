@@ -43,8 +43,8 @@ def test_judgment_overwritten_by_newer_put(tmp_path):
 
 def test_screening_roundtrip_keyed_by_themes_key(tmp_path):
     c = Cache(tmp_path / "c.sqlite")
-    s = Screening(uuid="A/L0/001", relevance={"k1": 8, "k2": 5}, feed_score=7, stories_score=4)
-    empty = Screening(uuid="B/L0/001", relevance={}, feed_score=3, stories_score=2)
+    s = Screening(uuid="A/L0/001", relevance={"k1": 8, "k2": 5}, score=7)
+    empty = Screening(uuid="B/L0/001", relevance={}, score=3)
     c.put_screenings([s, empty], "set1", "claude-haiku-5-5", "screen-1")
     assert c.get_screening(s.uuid, "set1", "claude-haiku-5-5", "screen-1") == s
     assert c.get_screening(empty.uuid, "set1", "claude-haiku-5-5", "screen-1") == empty

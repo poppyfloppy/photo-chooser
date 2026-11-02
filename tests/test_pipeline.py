@@ -103,7 +103,7 @@ def handler(match=True, fail_theme=None, compose=None):
         if output_model_of(kw) is ScreenOutput:
             n_themes = len(re.findall(r"^\d+\. ", last_text(content), flags=re.M))
             matches = [ScreenMatch(theme=t, relevance=8) for t in range(1, n_themes + 1)] if match else []
-            return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches, feed_score=6, stories_score=5)
+            return fake_response(ScreenOutput(items=[ScreenItem(id=i, matches=matches, score=6)
                                                      for i in ids]))
         if fail_theme and f"«{fail_theme}" in last_text(content):
             return api_error()
