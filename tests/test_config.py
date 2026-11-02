@@ -228,3 +228,18 @@ def test_shortlist_key_is_config_error(tmp_path):
     with pytest.raises(ConfigError) as e:
         load_app_config(path)
     assert "posts.carousels" in str(e.value)
+
+
+@pytest.mark.parametrize("key", ["min_feed_score", "min_stories_score"])
+def test_old_threshold_keys_rejected(tmp_path, key):
+    path = tmp_path / "config.yaml"
+    path.write_text(f"thresholds:\n  {key}: 6\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_app_config(path)
+    assert "thresholds.min_score" in str(e.value)
+
+
+def test_min_score_default():
+    from photo_chooser.config import Thresholds
+
+    assert Thresholds().min_score == 5

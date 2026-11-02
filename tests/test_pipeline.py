@@ -107,7 +107,7 @@ def handler(match=True, fail_theme=None, compose=None):
                                                      for i in ids]))
         if fail_theme and f"«{fail_theme}" in last_text(content):
             return api_error()
-        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, feed_score=7, stories_score=5,
+        return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=7, interesting=False,
                                                           reason="подходит", crop_feed="", crop_stories="") for i in ids]))
     return h
 
@@ -534,8 +534,8 @@ def test_compose_refusal_fallback_skips_off_theme(tmp_path):
     def h(n, kw):
         if output_model_of(kw) is JudgeOutput:
             ids = ids_in(kw["messages"][0]["content"])
-            return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=i in ("p01", "p03"), feed_score=9,
-                                                              stories_score=9, reason="r", crop_feed="", crop_stories="")
+            return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=i in ("p01", "p03"), score=9,
+                                                              interesting=False, reason="r", crop_feed="", crop_stories="")
                                                     for i in ids]))
         return base(n, kw)
 

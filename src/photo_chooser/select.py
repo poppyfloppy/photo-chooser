@@ -83,10 +83,10 @@ class Posts:
 
 @dataclass(frozen=True)
 class ShotFacts:
-    """Что отчёт пишет о кадре: обе оценки, причина и советы по кадрированию."""
+    """Что отчёт и сборка знают о кадре: сила, пометка «интересное», причина и советы по кадрированию."""
 
-    feed_score: float
-    stories_score: float
+    score: float
+    interesting: bool
     reason: str
     crop_feed: str
     crop_stories: str
@@ -94,13 +94,10 @@ class ShotFacts:
 
 def compose_candidates(cands: list[Asset], judgments: dict[str, Judgment], quality: dict[str, float],
                        th: Thresholds, interval_only: bool, limit: int) -> list[Asset]:
-    """FR-4.1: подходящие к теме и прошедшие хотя бы один порог, по большей из двух оценок, затем по качеству."""
+    """FR-4.1: подходящие к теме с силой не ниже min_score или с пометкой «интересное», по силе, затем по качеству."""
     fit = [a for a in cands if a.uuid in judgments and (interval_only or judgments[a.uuid].matches_theme)
-           and (judgments[a.uuid].feed_score >= th.min_feed_score
-                or judgments[a.uuid].stories_score >= th.min_stories_score)]
-    key = lambda a: (max(judgments[a.uuid].feed_score, judgments[a.uuid].stories_score),  # noqa: E731
-                     quality.get(a.uuid, 0.0))
-    return sorted(fit, key=key, reverse=True)[:limit]
+           and (judgments[a.uuid].score >= th.min_score or judgments[a.uuid].interesting)]
+    return sorted(fit, key=lambda a: (judgments[a.uuid].score, quality.get(a.uuid, 0.0)), reverse=True)[:limit]
 
 
 def _norm_id(raw: str) -> str:
@@ -160,15 +157,13 @@ def validate_composition(out: "ComposeOutput", ids: dict[str, Asset], limits: Po
 
 def fallback_posts(cands: list[Asset], judgments: dict[str, Judgment], quality: dict[str, float],
                    th: Thresholds, limits: PostsCfg, interval_only: bool = False) -> Posts:
-    """FR-4.4: сборка не удалась — одна карусель лучших по оценке ленты, stories — следующие по оценке stories.
-    Кадры, которые вторая ступень сочла не по теме, исключаются (FR-3 п.8)."""
+    """FR-4.4: сборка не удалась — одна карусель из сильнейших кадров, stories — следующие по силе; все не ниже
+    min_score. Кадры, которые вторая ступень сочла не по теме, исключаются (FR-3 п.8)."""
     judged = [a for a in cands if a.uuid in judgments and (interval_only or judgments[a.uuid].matches_theme)]
-    q = lambda a: quality.get(a.uuid, 0.0)  # noqa: E731
-    feed = sorted((a for a in judged if judgments[a.uuid].feed_score >= th.min_feed_score),
-                  key=lambda a: (judgments[a.uuid].feed_score, q(a)), reverse=True)[:limits.carousel_size]
-    taken = {a.uuid for a in feed}
-    rest = [a for a in judged if a.uuid not in taken and judgments[a.uuid].stories_score >= th.min_stories_score]
-    stories = sorted(rest, key=lambda a: (judgments[a.uuid].stories_score, q(a)), reverse=True)[:limits.stories]
+    strong = sorted((a for a in judged if judgments[a.uuid].score >= th.min_score),
+                    key=lambda a: (judgments[a.uuid].score, quality.get(a.uuid, 0.0)), reverse=True)
+    feed = strong[:limits.carousel_size]
+    stories = strong[limits.carousel_size:limits.carousel_size + limits.stories]
     carousels = [Carousel(FALLBACK_TITLE, [Slide(a) for a in feed])] if feed and limits.carousels else []
     return Posts(carousels, [StoryPick(a, "best", "") for a in stories])
 
@@ -183,13 +178,12 @@ def local_posts(cands: list[Asset], quality: dict[str, float], feats: dict[str, 
 
 
 def shot_facts(judgments: dict[str, Judgment]) -> dict[str, ShotFacts]:
-    return {u: ShotFacts(j.feed_score, j.stories_score, j.reason, j.crop_feed, j.crop_stories)
-            for u, j in judgments.items()}
+    return {u: ShotFacts(j.score, j.interesting, j.reason, j.crop_feed, j.crop_stories) for u, j in judgments.items()}
 
 
 def local_facts(cands: list[Asset], quality: dict[str, float],
                 feats: dict[str, LocalFeatures]) -> dict[str, ShotFacts]:
     ranks = dict(zip((a.uuid for a in cands),
                      percentile_ranks([feats[a.uuid].sharpness if a.uuid in feats else 0.0 for a in cands])))
-    return {a.uuid: ShotFacts(quality.get(a.uuid, 0.0), quality.get(a.uuid, 0.0),
-                              _local_reason(feats.get(a.uuid), ranks[a.uuid]), "", "") for a in cands}
+    return {a.uuid: ShotFacts(quality.get(a.uuid, 0.0), False, _local_reason(feats.get(a.uuid), ranks[a.uuid]), "", "")
+            for a in cands}

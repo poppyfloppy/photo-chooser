@@ -135,11 +135,11 @@ def test_build_profile_refusal_raises():
 
 
 def test_style_prompts_keep_people_out_of_style():
-    # D8: люди — не критерий; профиль стиля не должен вернуть их через «типичные сюжеты»
-    from photo_chooser.judge.prompts import STYLE_BLOCK
+    # D14: люди — не черта стиля, кроме постановочного портрета автора; правило о людях — в рубрике второй ступени
+    from photo_chooser.judge.prompts import JUDGE_SYSTEM_PROMPT, STYLE_BLOCK
 
     assert "people" in style.STYLE_SYSTEM_PROMPT and "not part of the style" in style.STYLE_SYSTEM_PROMPT
-    assert "not part of the style" in STYLE_BLOCK
+    assert "people" not in STYLE_BLOCK.lower() and "- People:" in JUDGE_SYSTEM_PROMPT
 
 
 def test_save_profile_rotates_previous(tmp_path):

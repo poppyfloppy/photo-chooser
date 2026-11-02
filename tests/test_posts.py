@@ -11,12 +11,12 @@ from photo_chooser.select import (
     validate_composition,
 )
 
-TH = Thresholds(min_feed_score=6, min_stories_score=4)
+TH = Thresholds()  # min_score = 5
 LIMITS = PostsCfg()
 
 
-def _j(a, feed, stories, matches=True, reason="r", crop_feed="", crop_stories=""):
-    return Judgment(uuid=a.uuid, matches_theme=matches, feed_score=feed, stories_score=stories, reason=reason,
+def _j(a, score, matches=True, reason="r", interesting=False, crop_feed="", crop_stories=""):
+    return Judgment(uuid=a.uuid, matches_theme=matches, score=score, reason=reason, interesting=interesting,
                     crop_feed=crop_feed, crop_stories=crop_stories)
 
 
@@ -31,16 +31,23 @@ def _uuids(items):
 
 def test_compose_candidates_thresholds_order_and_limit():
     a, b, c, d, e, f, g = (make_asset(uuid=u) for u in "abcdefg")
-    judgments = {a.uuid: _j(a, 9, 3), b.uuid: _j(b, 5, 3), c.uuid: _j(c, 9, 9, matches=False),
-                 d.uuid: _j(d, 5, 8), e.uuid: _j(e, 8, 2), f.uuid: _j(f, 8, 7)}
+    judgments = {a.uuid: _j(a, 9), b.uuid: _j(b, 4), c.uuid: _j(c, 9, matches=False),
+                 d.uuid: _j(d, 6), e.uuid: _j(e, 8), f.uuid: _j(f, 8)}
     quality = {d.uuid: 0.9, e.uuid: 0.1, f.uuid: 0.5}
     got = compose_candidates([a, b, c, d, e, f, g], judgments, quality, TH, interval_only=False, limit=3)
-    assert _uuids(got) == ["a", "d", "f"]  # b ниже обоих порогов, c не по теме, g не оценён
+    assert _uuids(got) == ["a", "f", "e"]  # b ниже порога, c не по теме, g не оценён; при равенстве — качество
+
+
+def test_compose_candidates_single_score():
+    a, b, c, d = (make_asset(uuid=u) for u in "abcd")
+    judgments = {"a": _j(a, 9), "b": _j(b, 7), "c": _j(c, 4), "d": _j(d, 3, interesting=True)}
+    got = compose_candidates([a, b, c, d], judgments, {}, TH, interval_only=False, limit=10)
+    assert _uuids(got) == ["a", "b", "d"]  # «интересное» проходит и ниже порога, слабый без пометки — нет
 
 
 def test_compose_candidates_interval_only_ignores_matches():
     c = make_asset(uuid="c")
-    got = compose_candidates([c], {"c": _j(c, 9, 9, matches=False)}, {}, TH, interval_only=True, limit=30)
+    got = compose_candidates([c], {"c": _j(c, 9, matches=False)}, {}, TH, interval_only=True, limit=30)
     assert _uuids(got) == ["c"]
 
 
@@ -97,15 +104,20 @@ def test_validate_clears_hint_for_best():
     assert posts.stories[0].hint == ""
 
 
-def test_fallback_posts_by_scores():
-    a, b, c, d, e = (make_asset(uuid=u) for u in "abcde")
-    judgments = {a.uuid: _j(a, 7, 5), b.uuid: _j(b, 9, 2), c.uuid: _j(c, 6, 9), d.uuid: _j(d, 3, 6), e.uuid: _j(e, 2, 2)}
-    posts = fallback_posts([a, b, c, d, e], judgments, {}, TH, PostsCfg(carousel_size=2, stories=2))
+def test_fallback_posts_single_score():
+    a, b, c, d = (make_asset(uuid=u) for u in "abcd")
+    judgments = {"a": _j(a, 8), "b": _j(b, 9), "c": _j(c, 7), "d": _j(d, 4)}
+    posts = fallback_posts([a, b, c, d], judgments, {}, TH, PostsCfg(carousel_size=2, stories=5))
     [carousel] = posts.carousels
     assert carousel.title == "Лучшее по оценкам"
     assert [s.asset.uuid for s in carousel.slides] == ["b", "a"]
-    assert [(s.asset.uuid, s.kind) for s in posts.stories] == [("c", "best"), ("d", "best")]
-    assert fallback_posts([e], {"e": judgments["e"]}, {}, TH, LIMITS).carousels == []
+    assert [(s.asset.uuid, s.kind) for s in posts.stories] == [("c", "best")]  # d ниже min_score
+
+
+def test_fallback_posts_nothing_strong():
+    a, b = make_asset(uuid="a"), make_asset(uuid="b")
+    posts = fallback_posts([a, b], {"a": _j(a, 4), "b": _j(b, 2)}, {}, TH, LIMITS)
+    assert posts.carousels == [] and posts.stories == []
 
 
 def test_local_posts_by_quality():
@@ -118,18 +130,18 @@ def test_local_posts_by_quality():
 
 def test_shot_facts_and_local_facts():
     a = make_asset(uuid="a")
-    facts = shot_facts({"a": _j(a, 8, 6, reason="Сфинкс", crop_feed="4:5", crop_stories="9:16")})
-    assert (facts["a"].feed_score, facts["a"].stories_score, facts["a"].reason, facts["a"].crop_feed) == \
-        (8, 6, "Сфинкс", "4:5")
+    facts = shot_facts({"a": _j(a, 8, reason="Сфинкс", interesting=True, crop_feed="4:5", crop_stories="9:16")})
+    assert (facts["a"].score, facts["a"].interesting, facts["a"].reason, facts["a"].crop_feed) == \
+        (8, True, "Сфинкс", "4:5")
     feats = {"a": LocalFeatures(uuid="a", aesthetic=0.7, is_utility=False, sharpness=5, mean_luma=0.5,
                                 face_quality=None, feature_print=b"")}
     local = local_facts([a], {"a": 0.61}, feats)
-    assert local["a"].feed_score == 0.61 and "эстетика 0.70" in local["a"].reason and local["a"].crop_feed == ""
+    assert local["a"].score == 0.61 and local["a"].interesting is False and "эстетика 0.70" in local["a"].reason and local["a"].crop_feed == ""
 
 
 def test_fallback_posts_excludes_off_theme():
     a, b = make_asset(uuid="a"), make_asset(uuid="b")
-    judgments = {"a": _j(a, 7, 5), "b": _j(b, 9, 9, matches=False)}
+    judgments = {"a": _j(a, 7), "b": _j(b, 9, matches=False)}
     posts = fallback_posts([a, b], judgments, {}, TH, LIMITS)
     assert [s.asset.uuid for s in posts.carousels[0].slides] == ["a"] and posts.stories == []
     interval = fallback_posts([a, b], judgments, {}, TH, LIMITS, interval_only=True)

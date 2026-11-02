@@ -41,8 +41,8 @@ def _cands(n=3):
             for i in range(n)]
 
 
-def _facts(cands, feed=8):
-    return {a.uuid: ShotFacts(feed, 6, f"Причина {a.uuid}", "", "") for a in cands}
+def _facts(cands, score=8, interesting=False):
+    return {a.uuid: ShotFacts(score, interesting, f"Причина {a.uuid}", "", "") for a in cands}
 
 
 def _style(fp="fp000001"):
@@ -66,7 +66,7 @@ def test_compose_request_shape():
     assert output_model_of(call) is ComposeOutput and call["_beta"] is False
     content = call["messages"][0]["content"]
     labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
-    assert labels[0] == "id: c01 (horizontal) · лента 8 · stories 6 · «Причина K0»"
+    assert labels[0] == "id: c01 (horizontal) · сила 8 · «Причина K0»"
     assert labels[1].startswith("id: c02 (vertical) · ")
     assert [base64.b64decode(b["source"]["data"]) for b in content if b["type"] == "image"] == [b"K0", b"K1", b"K2"]
     assert "«Пирамиды в Гиза: Пирамиды в Гизе, Сфинкс»" in content[-1]["text"]
@@ -108,9 +108,9 @@ def test_compose_cache_reuse_and_invalidation(tmp_path):
     again = run(_facts(cands))
     assert len(client.calls) == 1 and again.from_cache and again.usd == 0
     assert again.posts.carousels[0].slides[0].asset.uuid == "K1"
-    run(_facts(cands, feed=9))  # другие оценки — другой вход
+    run(_facts(cands, score=9))  # другие оценки — другой вход
     assert len(client.calls) == 2
-    run(_facts(cands, feed=9), style=_style())
+    run(_facts(cands, score=9), style=_style())
     assert len(client.calls) == 3
 
 
@@ -122,6 +122,24 @@ def test_compose_fingerprint_depends_on_limits_and_style():
     assert base != compose_input_fingerprint(cands, facts, AppConfig().posts.model_copy(update={"stories": 5}), None)
     assert base != compose_input_fingerprint(cands, facts, AppConfig().posts, _style())
     assert base != compose_input_fingerprint(list(reversed(cands)), facts, AppConfig().posts, None)
+
+
+def test_compose_fingerprint_depends_on_interesting():
+    cands = _cands()
+    facts = _facts(cands)
+    marked = {**facts, "K1": ShotFacts(8, True, "Причина K1", "", "")}
+    assert compose_input_fingerprint(cands, facts, AppConfig().posts, None) != \
+        compose_input_fingerprint(cands, marked, AppConfig().posts, None)
+
+
+def test_compose_label_strength_and_interesting():
+    client = FakeClient(compose_handler())
+    cands = [make_asset(uuid="H1"), make_asset(uuid="H2")]  # обе горизонтальные
+    facts = {"H1": ShotFacts(8, True, "r", "", ""), "H2": ShotFacts(6, False, "r", "", "")}
+    ComposeRunner(client, HAIKU, "medium", _preview).run(THEME, cands, facts, AppConfig().posts)
+    content = client.calls[0]["messages"][0]["content"]
+    labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
+    assert labels == ["id: c01 (horizontal) · сила 8 · интересное · «r»", "id: c02 (horizontal) · сила 6 · «r»"]
 
 
 def test_compose_records_spend_once(tmp_path):

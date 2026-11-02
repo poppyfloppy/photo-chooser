@@ -24,7 +24,7 @@ def test_features_roundtrip(tmp_path):
 
 def test_judgment_keyed_by_model_and_prompt(tmp_path):
     c = Cache(tmp_path / "c.sqlite")
-    j = Judgment(uuid="A/L0/001", matches_theme=True, feed_score=8, stories_score=5, reason="Пирамиды на закате")
+    j = Judgment(uuid="A/L0/001", matches_theme=True, score=8, reason="Пирамиды на закате")
     c.put_judgments([j], "t1", "claude-haiku-5-5", "judge-1")
     assert c.get_judgment(j.uuid, "t1", "claude-haiku-5-5", "judge-1") == j
     assert c.get_judgment(j.uuid, "t1", "claude-opus-5-5", "judge-1") is None
@@ -34,8 +34,8 @@ def test_judgment_keyed_by_model_and_prompt(tmp_path):
 
 def test_judgment_overwritten_by_newer_put(tmp_path):
     c = Cache(tmp_path / "c.sqlite")
-    j = Judgment(uuid="A", matches_theme=True, feed_score=8, stories_score=5, reason="r")
-    j2 = Judgment(uuid="A", matches_theme=False, feed_score=2, stories_score=3, reason="r2")
+    j = Judgment(uuid="A", matches_theme=True, score=8, reason="r")
+    j2 = Judgment(uuid="A", matches_theme=False, score=2, reason="r2")
     c.put_judgments([j], "t1", "m", "judge-1")
     c.put_judgments([j2], "t1", "m", "judge-1")
     assert c.get_judgment("A", "t1", "m", "judge-1") == j2
@@ -68,7 +68,7 @@ def test_cache_survives_reopen(tmp_path):
     f = _features()
     c.put_features(f)
     c.add_spend("album-1", "claude-haiku-5-5", 0.5)
-    j = Judgment(uuid="A", matches_theme=True, feed_score=8, stories_score=5, reason="r")
+    j = Judgment(uuid="A", matches_theme=True, score=8, reason="r")
     c.put_judgments([j], "t1", "m", "judge-1")
     c.close()
     reopened = Cache(path)
@@ -84,3 +84,11 @@ def test_composition_roundtrip(tmp_path):
     assert c.get_composition("t1", "claude-opus-5-5", "compose-1", "fp2") is None
     assert c.get_composition("t1", "claude-haiku-5-5", "compose-1", "fp1") is None
     assert c.get_composition("t2", "claude-opus-5-5", "compose-1", "fp1") is None
+
+
+def test_judgment_roundtrip_with_interesting(tmp_path):
+    c = Cache(tmp_path / "c.sqlite")
+    j = Judgment(uuid="A", matches_theme=True, score=6, reason="Роспись гробницы", interesting=True,
+                 crop_feed="", crop_stories="центр")
+    c.put_judgments([j], "t1", "m", "judge-6")
+    assert c.get_judgment("A", "t1", "m", "judge-6") == j

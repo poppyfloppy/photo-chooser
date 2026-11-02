@@ -6,7 +6,7 @@ from photo_chooser.config import Theme, Thresholds
 from photo_chooser.models import Judgment, Screening
 from photo_chooser.select import in_interval, screen_candidates
 
-TH = Thresholds(min_feed_score=6, min_stories_score=4)
+TH = Thresholds()
 GIZA = Theme(name="Гиза", query="пирамиды")
 DAY = Theme(name="День 3", start=datetime(2026, 3, 14, 5, 0), end=datetime(2026, 3, 14, 12, 0))
 
@@ -15,8 +15,8 @@ def _at(iso: str):
     return make_asset(taken_at=datetime.fromisoformat(iso).astimezone(UTC))
 
 
-def _j(a, feed=7, stories=5, matches=True, reason="r"):
-    return Judgment(uuid=a.uuid, matches_theme=matches, feed_score=feed, stories_score=stories, reason=reason)
+def _j(a, score=7, matches=True, reason="r"):
+    return Judgment(uuid=a.uuid, matches_theme=matches, score=score, reason=reason)
 
 
 def _s(a, rel=None, score=5):

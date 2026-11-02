@@ -4,7 +4,7 @@
 """
 
 SCREEN_PROMPT_VERSION = "screen-3"
-JUDGE_PROMPT_VERSION = "judge-5"
+JUDGE_PROMPT_VERSION = "judge-6"
 
 SCREEN_SYSTEM_PROMPT = """You sort travel photos into the themes of one trip for an Instagram shortlist.
 You get the trip album name and a numbered list of themes written by the traveller, then photos, each preceded by its id.
@@ -17,11 +17,11 @@ Return exactly one item for every photo id."""
 JUDGE_SYSTEM_PROMPT = """You are a photo editor choosing travel photos for Instagram.
 For every photo (each is preceded by its id and orientation), judge it against the theme given at the end:
 - matches_theme: whether the photo belongs to the theme.
-- feed_score (1-10): strength as an Instagram feed post — the trip's best shots. Aesthetics come first: light, colour, composition, mood, visual impact; technical quality and informational value are secondary. Photos without people are often the strongest feed posts.
-- stories_score (1-10): suitability for Instagram stories — a lighter, less selective feed of the trip: good on-theme shots that tell the trip, including ones not strong enough for the feed. Aesthetics come first here too. People are not required. Minor technical flaws are acceptable.
-- Judge feed_score and stories_score by the photo's potential after editing and cropping in the page's style: problems that editing fixes (exposure, colour and white balance, a tilted horizon, the crop) are not drawbacks; problems it cannot fix (motion blur, missed focus, blown highlights, a cut-off subject) are.
-- stories_score also rewards interesting moments that need a short explanatory text and therefore do not fit the feed; stories get lighter editing.
-- reason: one short sentence in the language of the theme on what makes the photo work or not. Do not treat the absence of people as a drawback.
+- score (1-10): strength of the photo for the author's Instagram — the strongest photos make the feed post, the next ones go to stories. Aesthetics come first: light, colour, composition, mood, visual impact; technical quality and informational value are secondary.
+- Judge score by the photo's potential after editing and cropping in the page's style: problems that editing fixes (exposure, colour and white balance, a tilted horizon, the crop) are not drawbacks; problems it cannot fix (motion blur, missed focus, blown highlights, a cut-off subject) are.
+- People: a posed portrait of the traveller — the person is the main subject and poses in front of the place — is a typical cover of the author's feed and raises the score; posing is not a drawback. Crowds, passers-by and random tourists that distract from the place are a drawback. The absence of people is not a drawback.
+- interesting: true for a moment that needs a short explanatory text (what is shown, the story of the place) and is therefore good for stories even at a middling score; otherwise false.
+- reason: one short sentence in the language of the theme on what makes the photo work or not.
 - crop_feed, crop_stories: for a horizontal or square photo, one short phrase each in the language of the theme on how to crop it to a vertical frame — 4:5 for the feed, 9:16 for stories — and what to keep in the frame. Empty strings for a vertical photo.
 Return exactly one item for every photo id."""
 
@@ -40,7 +40,7 @@ STYLE_REFERENCE_LABELS = {
 
 STYLE_BLOCK = """Style of the author's Instagram page, written from their published posts and page screenshots:
 {text}
-Fit to this style — the feed section for feed_score, the stories section for stories_score — is, together with the photo's aesthetics, the main criterion; technical quality and informational value matter less. The presence or absence of people is not part of the style."""
+Fit to the feed section of this style is, together with the photo's aesthetics, the main criterion of score; technical quality and informational value matter less."""
 
 STYLE_SCREENSHOTS_NOTE = "The screenshots at the start of the message show the page itself; do not score them."
 

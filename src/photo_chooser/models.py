@@ -52,8 +52,8 @@ class Judgment:
 
     uuid: str
     matches_theme: bool
-    feed_score: int
-    stories_score: int
+    score: int  # сила кадра 1–10, одна для поста и stories (SPEC FR-3 п.8, D13)
     reason: str
+    interesting: bool = False  # момент, которому нужен поясняющий текст (для stories)
     crop_feed: str = ""  # совет по кадрированию до 4:5; пусто у вертикальных кадров (SPEC FR-3 п.8)
     crop_stories: str = ""  # то же до 9:16

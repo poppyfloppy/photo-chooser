@@ -57,7 +57,7 @@ def _assets(n):
 def _judge_reply(kw, pause=0.0):
     if pause:
         threading.Event().wait(pause)  # настоящая пауза: time.sleep в части тестов подменён
-    return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, feed_score=7, stories_score=5,
+    return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=7, interesting=False,
                                                       reason="r", crop_feed="", crop_stories="")
                                             for i in ids_in(kw["messages"][0]["content"])]))
 
@@ -162,7 +162,7 @@ def _compose_reply(pause=0.0):
 def test_compose_logs_request_wait_and_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(stages, "WAIT_NOTICE_S", 0.02)
     cache, cands = Cache(tmp_path / "c.sqlite"), _assets(3)
-    facts = {a.uuid: ShotFacts(8, 6, "r", "", "") for a in cands}
+    facts = {a.uuid: ShotFacts(8, False, "r", "", "") for a in cands}
     runner = ComposeRunner(FakeClient(_compose_reply(pause=0.2)), HAIKU, "low", _preview)
     logs: list[str] = []
     run_compose(runner, cache, THEME, cands, facts, AppConfig(), "album-1", log=logs.append)
@@ -176,7 +176,7 @@ def test_compose_logs_request_wait_and_answer(tmp_path, monkeypatch):
 
 def test_compose_request_error_propagates_from_wait(tmp_path):
     cands = _assets(2)
-    facts = {a.uuid: ShotFacts(8, 6, "r", "", "") for a in cands}
+    facts = {a.uuid: ShotFacts(8, False, "r", "", "") for a in cands}
     runner = ComposeRunner(FakeClient(lambda n, kw: api_error()), HAIKU, "low", _preview)
     with pytest.raises(anthropic.BadRequestError):
         run_compose(runner, Cache(tmp_path / "c.sqlite"), THEME, cands, facts, AppConfig(), "album-1")
