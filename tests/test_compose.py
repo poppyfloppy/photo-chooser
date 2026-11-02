@@ -9,8 +9,10 @@ from fakes import FakeClient, fake_response, output_model_of
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme
 from photo_chooser.judge.prompts import (
-    COMPOSE_SYSTEM_PROMPT,
+    COMPOSE_PROMPT_VERSION,
     COMPOSE_SCREENSHOTS_NOTE,
+    COMPOSE_STYLE_BLOCK,
+    COMPOSE_SYSTEM_PROMPT,
     STYLE_REFERENCE_LABELS,
 )
 from photo_chooser.judge.stages import (
@@ -186,3 +188,35 @@ def test_compose_empty_answer_is_valid_nothing(tmp_path):
     outcome = run_compose(ComposeRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEME, cands,
                           _facts(cands), AppConfig(), "album-1")
     assert outcome.posts is not None and outcome.posts.carousels == [] and outcome.posts.stories == []
+
+
+# --- правила сборки по приёмке 0.3 (FR-4.2) --------------------------------------------------
+
+
+def test_compose_prompt_version_bumped():
+    assert COMPOSE_PROMPT_VERSION == "compose-2"  # сборки по прежним правилам в кэше не годятся
+
+
+def test_compose_prompt_allows_leaving_candidates_out():
+    # модель раскладывала всех 30 кандидатов: «Use every id at most once» читалось как «используй каждый»
+    assert "do not have to use every candidate" in COMPOSE_SYSTEM_PROMPT
+    assert "Each id may appear at most once" in COMPOSE_SYSTEM_PROMPT and "Use every id" not in COMPOSE_SYSTEM_PROMPT
+
+
+def test_compose_prompt_one_carousel_by_default():
+    assert "usually just one" in COMPOSE_SYSTEM_PROMPT and "at least 4 strong photos" in COMPOSE_SYSTEM_PROMPT
+
+
+def test_compose_prompt_requires_different_views_by_principle():
+    # разные планы — принцип с примером, а не перечень, который модель станет заполнять
+    assert "Each slide must add something new" in COMPOSE_SYSTEM_PROMPT
+    assert "same framing from almost the same viewpoint" in COMPOSE_SYSTEM_PROMPT and "(e.g." in COMPOSE_SYSTEM_PROMPT
+
+
+def test_compose_prompt_stories_quality_bar():
+    assert "light editing will not fix" in COMPOSE_SYSTEM_PROMPT
+
+
+def test_compose_prompt_puts_aesthetics_and_style_first():
+    assert "first of all by aesthetics" in COMPOSE_SYSTEM_PROMPT
+    assert "main criterion" in COMPOSE_STYLE_BLOCK and "not part of the style" in COMPOSE_STYLE_BLOCK

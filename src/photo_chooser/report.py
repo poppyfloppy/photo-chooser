@@ -63,6 +63,9 @@ def _theme_line(theme: Theme) -> str:
 # --- отчёт о постах (v0.3, FR-6.3) -----------------------------------------------------------
 
 STORY_KINDS = {"best": "лучшее", "interesting": "интересное"}
+SCORES_NOTE = ("Оценка — баллы второй ступени 1–10 за ленту и за stories; «Причина» — её пояснение к оценке, "
+               "а не решение сборки.")
+SCORES_NOTE_LOCAL = "Оценка — локальная оценка качества 0–1 (без облака); «Причина» — из чего она сложилась."
 
 
 def _orientation_of(a: Asset) -> str:
@@ -101,12 +104,13 @@ def _header_lines(theme: Theme, header: ReportHeader) -> list[str]:
 def write_report(path: Path, theme: Theme, header: ReportHeader, posts: ExportedPosts,
                        facts: dict[str, ShotFacts], stats: ThemeStats) -> None:
     lines = _header_lines(theme, header)
+    lines += [SCORES_NOTE_LOCAL if header.model is None else SCORES_NOTE, ""]
     lines += ["## Лента", ""]
     if not posts.carousels:
         lines += ["Каруселей нет — сильных кадров для ленты не нашлось.", ""]
     for n, carousel in enumerate(posts.carousels, 1):
         lines += [f"### Карусель {n} — {carousel.title}", "", f"Папка: `feed/{carousel.folder}/`", "",
-                  "| Слайд | Файл | Лента / stories | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |",
+                  "| Слайд | Файл | Оценка (лента / stories) | Ориентация | Пометки | Причина | Кадрирование (4:5) | Запасные |",
                   "|---|---|---|---|---|---|---|---|"]
         for pos, slide in enumerate(carousel.slides, 1):
             f = facts.get(slide.shot.asset.uuid)
@@ -119,7 +123,7 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
     if not posts.stories:
         lines += ["Stories нет.", ""]
     else:
-        lines += ["| № | Файл | Лента / stories | Тип | Что пояснить | Причина | Кадрирование (9:16) |",
+        lines += ["| № | Файл | Оценка (лента / stories) | Тип | Что пояснить | Причина | Кадрирование (9:16) |",
                   "|---|---|---|---|---|---|---|"]
         for pos, story in enumerate(posts.stories, 1):
             f = facts.get(story.shot.asset.uuid)
