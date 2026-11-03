@@ -74,7 +74,8 @@ def test_compose_request_shape():
 def test_compose_request_with_style_and_opus():
     client = FakeClient(compose_handler())
     cands = _cands(1)
-    compose_once(client, ComposeRunner(OPUS, "medium", _preview, style=_style()), THEME, cands, _facts(cands), AppConfig().posts)
+    compose_once(client, ComposeRunner(OPUS, "medium", _preview, style=_style()), THEME, cands, _facts(cands),
+                 AppConfig().posts)
     call = client.calls[0]
     assert "Плёнка, тёплые тона." in call["system"] and COMPOSE_SCREENSHOTS_NOTE in call["system"]
     assert "feed_score" not in call["system"] and "stories_score" not in call["system"]  # сборка не ставит оценки

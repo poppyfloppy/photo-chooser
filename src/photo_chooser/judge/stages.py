@@ -360,7 +360,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
 
     transport.resume("judge", handler_for, log)
     price_for(cfg, runner.model)
-    log(f"Вторая ступень ({runner.model}): тем {len(tasks)}")
+    log(f"Вторая ступень ({runner.model}{', пакет' if transport.batch else ''}): тем {len(tasks)}")
     outcomes: dict[str, StageOutcome[Judgment]] = {}
     jobs: list[Job] = []
     for t in tasks:
@@ -507,7 +507,7 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
 
     transport.resume("compose", handler_for, log)
     if tasks:
-        log(f"Сборка постов ({runner.model}): тем {len(tasks)}")
+        log(f"Сборка постов ({runner.model}{', пакет' if transport.batch else ''}): тем {len(tasks)}")
     outcomes: dict[str, ComposeOutcome] = {}
     sent: dict[str, dict[str, Asset]] = {}
     jobs: list[Job] = []

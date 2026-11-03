@@ -151,6 +151,7 @@ class CloudCfg(_Strict):
     screen_model: str = "claude-haiku-5-5"
     model: str = "claude-haiku-5-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    batch: bool = False  # пакетный режим второй ступени и сборки (FR-12); флаги --batch / --no-batch
     pricing: dict[str, Price] = Field(default_factory=lambda: dict(DEFAULT_PRICING))
     max_cost_usd_per_album: float = Field(default=5.0, ge=0)
     candidates_per_theme: int = Field(default=100, ge=1)

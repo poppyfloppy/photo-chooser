@@ -269,3 +269,15 @@ def test_report_explains_scores(tmp_path):
     assert ("Оценка — сила кадра по второй ступени, 1–10; «Причина» — её пояснение к оценке, "
             "а не решение сборки.") in (tmp_path / "cloud.md").read_text(encoding="utf-8")
     assert "Оценка — локальная оценка качества 0–1" in (tmp_path / "local.md").read_text(encoding="utf-8")
+
+
+def test_report_mode_line_after_effort(tmp_path):
+    from photo_chooser.report import MODE_BATCH, MODE_SYNC
+
+    assert (MODE_SYNC, MODE_BATCH) == ("синхронный", "пакетный (Message Batches, −50%)")
+    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+                          prompt_versions="screen-4, judge-7, compose-5", run_at=NOW, mode=MODE_BATCH)
+    path = tmp_path / "report.md"
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, _empty_posts(tmp_path), {}, _stats())
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[lines.index("- effort: medium") + 1] == "- Режим: пакетный (Message Batches, −50%)"
