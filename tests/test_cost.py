@@ -32,7 +32,8 @@ def test_estimate_run_counts_screen_once_and_judge_per_theme():
 
 
 def test_usage_usd_haiku():
-    assert usage_usd(TokenUsage(input=1_000_000, output=1_000_000), Price(input=0.10, output=0.50)) == pytest.approx(0.60)
+    usage = TokenUsage(input=1_000_000, output=1_000_000)
+    assert usage_usd(usage, Price(input=0.10, output=0.50)) == pytest.approx(0.60)
 
 
 OPUS = Price(input=4.00, output=20.00, cache_read=0.20)
@@ -105,3 +106,11 @@ def test_estimate_includes_compose():
     expected = (30 * (1049 + 60) + 500) * 4.00 / 1e6 + 1500 * 20.00 / 1e6
     assert estimate_run_usd(0, [], cfg, "claude-haiku-5-5", "claude-opus-5-5", n_compose=[30, 0]) == \
         pytest.approx(expected)
+
+
+def test_estimate_batch_halves_judge_and_compose():
+    cfg = CloudCfg()
+    args = (1000, [100, 100], cfg, "claude-haiku-5-5", "claude-opus-5-5")
+    full = estimate_run_usd(*args, n_compose=[30, 30])
+    screen = estimate_run_usd(1000, [], cfg, "claude-haiku-5-5", "claude-opus-5-5")
+    assert estimate_run_usd(*args, n_compose=[30, 30], batch=True) == pytest.approx(screen + 0.5 * (full - screen))

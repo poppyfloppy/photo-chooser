@@ -16,6 +16,7 @@ from photo_chooser.judge.cost import BudgetExceeded, TokenUsage, UnknownModelPri
 from photo_chooser.judge.errors import InsufficientCredit
 from photo_chooser.judge.transport import check_credentials, has_credentials, make_client
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosAccessError
+from photo_chooser.report import MODE_BATCH, MODE_SYNC
 
 EXIT_ERROR, EXIT_CONFIG, EXIT_BUDGET, EXIT_ALBUM, EXIT_ACCESS, EXIT_BILLING = 1, 2, 3, 4, 5, 6
 LOG_DIR = Path("~/Library/Logs/photo-chooser").expanduser()
@@ -104,6 +105,8 @@ def run_command(
     no_cloud: bool = typer.Option(False, "--no-cloud", help="Без Claude: только локальные оценки, бесплатно"),
     model: str | None = typer.Option(None, "--model", help="Модель второй ступени на этот запуск"),
     max_cost: float | None = typer.Option(None, "--max-cost", help="Лимит стоимости альбома на этот запуск, $"),
+    batch: bool | None = typer.Option(None, "--batch/--no-batch",
+                                      help="Вторая ступень и сборка пакетом: вдвое дешевле, ответ до часа и дольше"),
 ) -> None:
     """Собрать посты по темам поездки."""
     with _exit_codes():
@@ -117,7 +120,7 @@ def run_command(
                 raise ConfigError("Укажите файл поездки (photo-chooser run trip.yaml) или --album и --theme")
             trip = trip_from_args(album, theme, query, start, end, timezone)
         cfg = load_app_config()
-        opts = pipeline.RunOptions(dry_run=dry_run, no_cloud=no_cloud, model=model, max_cost=max_cost)
+        opts = pipeline.RunOptions(dry_run=dry_run, no_cloud=no_cloud, model=model, max_cost=max_cost, batch=batch)
         result = pipeline.run(trip, cfg, opts, make_library(), make_cache(), make_client, datetime.now(), log=_err,
                               style_path=STYLE_PATH)
         failed = _print_result(result, opts, cfg.cloud.max_cost_usd_per_album if max_cost is None else max_cost)
@@ -207,6 +210,7 @@ def _print_result(result: pipeline.RunResult, opts: pipeline.RunOptions, limit: 
         if opts.no_cloud:
             typer.echo("Режим без облака: стоимость $0")
         else:
+            typer.echo(f"Режим: {MODE_BATCH if result.batch else MODE_SYNC}")
             typer.echo(f"Оценка стоимости запуска (обе ступени и сборка): ${result.estimate_usd:.2f}; уже потрачено по альбому "
                        f"${result.album_spend_usd:.2f}, лимит ${limit:.2f}")
         return False

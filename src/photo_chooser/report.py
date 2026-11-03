@@ -11,6 +11,10 @@ from photo_chooser.select import ShotFacts
 
 
 
+MODE_SYNC = "синхронный"
+MODE_BATCH = "пакетный (Message Batches, −50%)"
+
+
 @dataclass
 class ReportHeader:
     screen_model: str | None  # None — без облака
@@ -21,6 +25,7 @@ class ReportHeader:
     warnings: list[str] = field(default_factory=list)
     album: str = ""
     style: str | None = None  # строка о профиле стиля (FR-6.3); None — без профиля
+    mode: str | None = None  # режим отправки второй ступени и сборки (FR-12); None — без облака
 
 
 @dataclass
@@ -94,6 +99,8 @@ def _header_lines(theme: Theme, header: ReportHeader) -> list[str]:
     else:
         lines.append(f"- Первая ступень: {header.screen_model or '—'}; вторая ступень и сборка: {header.model or '—'}")
         lines.append(f"- effort: {header.effort or '—'}")
+        if header.mode:
+            lines.append(f"- Режим: {header.mode}")
         lines.append(f"- Версия промпта: {header.prompt_versions or '—'}")
         if header.style:
             lines.append(f"- Стиль: {header.style}")
@@ -152,8 +159,8 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
               f"вторая ступень ${stats.usd_judge:.4f}, сборка ${stats.usd_compose:.4f} (по теме); "
               f"накоплено по альбому ${stats.usd_album_total:.2f}"]
     if header.model is not None:
-        lines.append(f"- Кэш мета-блока (вторая ступень и сборка): записано {stats.cache_write_tokens / 1000:.1f} тыс., "
-                     f"прочитано {stats.cache_read_tokens / 1000:.1f} тыс. токенов")
+        lines.append(f"- Кэш мета-блока (вторая ступень и сборка): записано {stats.cache_write_tokens / 1000:.1f} "
+                     f"тыс., прочитано {stats.cache_read_tokens / 1000:.1f} тыс. токенов")
     lines.append("")
     skipped = [(a.filename, reason) for a, reason in posts.failed] + list(stats.skipped)
     if skipped:

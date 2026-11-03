@@ -163,9 +163,10 @@ def test_groups_announce_waiting_for_answer(tmp_path, monkeypatch):
 def test_screen_logs_cached_count(tmp_path):
     cache, assets = Cache(tmp_path / "c.sqlite"), _assets(50)
     runner = ScreenRunner(HAIKU, "low", _preview)
-    screen_run(FakeClient(lambda n, kw: _screen_reply(kw)), runner, cache, "Egypt.26", "album-1", [THEME], assets[:20], CloudCfg())
+    client = FakeClient(lambda n, kw: _screen_reply(kw))
+    screen_run(client, runner, cache, "Egypt.26", "album-1", [THEME], assets[:20], CloudCfg())
     logs: list[str] = []
-    screen_run(FakeClient(lambda n, kw: _screen_reply(kw)), runner, cache, "Egypt.26", "album-1", [THEME], assets, CloudCfg(), log=logs.append)
+    screen_run(client, runner, cache, "Egypt.26", "album-1", [THEME], assets, CloudCfg(), log=logs.append)
     assert logs[0] == "Первая ступень (claude-haiku-5-5): 50 снимков, из кэша 20, групп 2"
 
 
@@ -184,7 +185,8 @@ def test_compose_logs_request_wait_and_answer(tmp_path, monkeypatch):
     facts = {a.uuid: ShotFacts(8, False, "r", "", "") for a in cands}
     runner = ComposeRunner(HAIKU, "low", _preview)
     logs: list[str] = []
-    compose_one(FakeClient(_compose_reply(pause=0.2)), runner, cache, THEME, cands, facts, AppConfig(), "album-1", log=logs.append)
+    compose_one(FakeClient(_compose_reply(pause=0.2)), runner, cache, THEME, cands, facts, AppConfig(), "album-1",
+                log=logs.append)
     assert logs[:2] == ["Сборка постов (claude-haiku-5-5): тем 1", "  «Пирамиды в Гиза»: кандидатов 3"]
     assert "  сборка постов: ждём ответ модели (0:00), готово тем 0/1" in logs
     assert logs[-1] == "  сборка постов: тема 1/1 (0:00)"

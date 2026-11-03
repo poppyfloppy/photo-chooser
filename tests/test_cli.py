@@ -267,3 +267,23 @@ def test_style_command_missing_previews_keeps_profile(tmp_path, monkeypatch):
     assert result.exit_code == 2 and client.calls == []
     assert profile.read_text(encoding="utf-8") == "хороший профиль\n"
     assert not (tmp_path / "cfg" / "style.prev.md").exists()
+
+
+def _dry_run_mode(env, monkeypatch, *flags, batch_in_config=False):
+    tmp_path = env[0]
+    monkeypatch.setattr(cli, "load_app_config", lambda: AppConfig(output_dir=tmp_path / "out",
+                                                                  cloud={"batch": batch_in_config}))
+    result = runner.invoke(cli.app, ["run", "--album", "Египет 2026", "--theme", "Гиза", "--query", "пирамиды",
+                                     "--dry-run", *flags])
+    assert result.exit_code == 0, result.output
+    return [line for line in result.output.splitlines() if line.startswith("Режим: ")]
+
+
+def test_dry_run_prints_mode(env, monkeypatch):
+    assert _dry_run_mode(env, monkeypatch) == ["Режим: синхронный"]
+    assert _dry_run_mode(env, monkeypatch, "--batch") == ["Режим: пакетный (Message Batches, −50%)"]
+
+
+def test_batch_flag_overrides_config(env, monkeypatch):
+    assert _dry_run_mode(env, monkeypatch, batch_in_config=True) == ["Режим: пакетный (Message Batches, −50%)"]
+    assert _dry_run_mode(env, monkeypatch, "--no-batch", batch_in_config=True) == ["Режим: синхронный"]

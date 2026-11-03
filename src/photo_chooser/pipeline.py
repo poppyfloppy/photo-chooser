@@ -30,10 +30,10 @@ from photo_chooser.judge.stages import (
     run_judge,
     run_screen,
 )
-from photo_chooser.judge.transport import SyncTransport, check_credentials
+from photo_chooser.judge.transport import BatchTransport, SyncTransport, check_credentials
 from photo_chooser.library.base import PhotosLibrary
 from photo_chooser.models import AlbumRef, Asset, LocalFeatures, Screening
-from photo_chooser.report import ReportHeader, ThemeStats, write_report
+from photo_chooser.report import MODE_BATCH, MODE_SYNC, ReportHeader, ThemeStats, write_report
 from photo_chooser.select import (
     Posts,
     compose_candidates,
@@ -59,6 +59,7 @@ class RunOptions:
     no_cloud: bool = False
     model: str | None = None  # модель второй ступени на этот запуск
     max_cost: float | None = None  # лимит бюджета альбома на этот запуск
+    batch: bool | None = None  # пакетный режим на этот запуск; None — как в cloud.batch (FR-12.1)
 
 
 @dataclass
@@ -89,6 +90,7 @@ class RunResult:
     estimate_usd: float
     theme_counts: dict[str, int] = field(default_factory=dict)  # снимков темы после отсева и интервала
     album_spend_usd: float = 0.0
+    batch: bool = False  # вторая ступень и сборка — пакетом (FR-12)
 
 
 @dataclass
@@ -158,7 +160,7 @@ def _screen_scope(trip: TripConfig, theme_assets: dict[str, list[Asset]], pool: 
 
 def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets: dict[str, list[Asset]],
               screen_scope: list[Asset], cache: Cache, screen_model: str, judge_model: str,
-              style: StyleContext | None) -> float:
+              style: StyleContext | None, batch: bool) -> float:
     price_for(cfg.cloud, screen_model)
     price_for(cfg.cloud, judge_model)
     key = themes_key(state.album.title, trip.query_themes)
@@ -191,7 +193,7 @@ def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets:
         cached = comp and cache.get_composition(t.key(), judge_model, COMPOSE_PROMPT_VERSION, fingerprint) is not None
         n_compose.append(0 if cached else len(comp))
     return estimate_run_usd(n_screen, n_judge, cfg.cloud, screen_model, judge_model,
-                            judge_extra_tokens=style.extra_tokens if style else 0, n_compose=n_compose)
+                            judge_extra_tokens=style.extra_tokens if style else 0, n_compose=n_compose, batch=batch)
 
 
 def _theme_dir(run_dir: Path, theme: Theme) -> Path:
@@ -229,15 +231,17 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
         style = load_style(style_path, library, cfg)
         style_warnings = style.warnings if style else [NO_STYLE_WARNING]
 
+    batch = cfg.cloud.batch if opts.batch is None else opts.batch
     estimate = 0.0
     if not opts.no_cloud:
         estimate = _estimate(trip, cfg, state, theme_assets, screen_scope, cache, screen_model, judge_model,
-                             style)
+                             style, batch)
         limit = opts.max_cost if opts.max_cost is not None else cfg.cloud.max_cost_usd_per_album
         check_budget(cache.album_spend(album.uuid), estimate, limit)
     if opts.dry_run:
         return RunResult(run_dir=None, themes=[ThemeOutcome(t, None, None, None) for t in trip.themes],
-                         estimate_usd=estimate, theme_counts=counts, album_spend_usd=cache.album_spend(album.uuid))
+                         estimate_usd=estimate, theme_counts=counts, album_spend_usd=cache.album_spend(album.uuid),
+                         batch=batch)
 
     long_side = cfg.cloud.preview_long_side_px
 
@@ -246,7 +250,12 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
 
     screenings: dict[str, Screening] = {}
     screen: StageOutcome | None = None
-    transport = SyncTransport(client, notify=log) if client is not None else None
+    # Вторая ступень и сборка: пакетом — с кэшем на час, пакет считается дольше 5 минут (D15, D16). Незабранные
+    # пакеты прерванного запуска забираются в любом режиме (FR-12.4).
+    batches = BatchTransport(client, cache, album.uuid, notify=log) if client is not None else None
+    transport = SyncTransport(client, notify=log, collector=batches) if client is not None else None
+    judge_transport = batches if batch else transport
+    cache_ttl = "1h" if batch else "5m"
     if not opts.no_cloud and trip.query_themes and screen_scope:
         runner = ScreenRunner(screen_model, cfg.cloud.effort, preview)
         # Ошибка здесь останавливает запуск: без первой ступени темы с query не обработать.
@@ -275,10 +284,10 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
     # Вторая ступень всех тем, затем сборка всех тем (FR-3, «Порядок этапов»)
     cloud = [w for w in works if not opts.no_cloud and w.cands]
     if cloud:
-        judge_runner = JudgeRunner(judge_model, cfg.cloud.effort, preview, style=style)
+        judge_runner = JudgeRunner(judge_model, cfg.cloud.effort, preview, style=style, cache_ttl=cache_ttl)
         tasks = [JudgeTask(w.theme, w.cands, {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0)
                                               / 10 for a in w.cands}) for w in cloud]
-        judged = run_judge(judge_runner, transport, cache, tasks, cfg.cloud, album.uuid, log=log)
+        judged = run_judge(judge_runner, judge_transport, cache, tasks, cfg.cloud, album.uuid, log=log)
         to_compose: list[_ThemeWork] = []
         for w in cloud:
             w.judge = judged[w.theme.key()]
@@ -294,8 +303,8 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             if w.comp:
                 to_compose.append(w)
         if to_compose:
-            compose_runner = ComposeRunner(judge_model, cfg.cloud.effort, preview, style=style)
-            composed = run_compose(compose_runner, transport, cache,
+            compose_runner = ComposeRunner(judge_model, cfg.cloud.effort, preview, style=style, cache_ttl=cache_ttl)
+            composed = run_compose(compose_runner, judge_transport, cache,
                                    [ComposeTask(w.theme, w.comp, w.facts) for w in to_compose], cfg, album.uuid, log)
             for w in to_compose:
                 c = composed[w.theme.key()]
@@ -331,7 +340,8 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 prompt_versions=(None if opts.no_cloud else
                                  f"{SCREEN_PROMPT_VERSION}, {judge_prompt_version(style)}, {COMPOSE_PROMPT_VERSION}"),
                 run_at=now, warnings=w.warnings, album=album.title,
-                style=None if style is None else _style_line(style))
+                style=None if style is None else _style_line(style),
+                mode=None if opts.no_cloud else (MODE_BATCH if batch else MODE_SYNC))
             stats = ThemeStats(
                 read=len(state.assets), no_preview=len(state.no_preview), junk=len(state.junk),
                 duplicates_collapsed=state.duplicates_collapsed, in_interval=len(w.assets),
@@ -345,7 +355,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             report_path = theme_dir / "report.md"
             write_report(report_path, t, header, exported, w.facts, stats)
             outcomes.append(ThemeOutcome(t, report_path, exported, w.error))
-    return RunResult(run_dir=run_dir, themes=outcomes, estimate_usd=estimate, theme_counts=counts,
+    return RunResult(run_dir=run_dir, themes=outcomes, estimate_usd=estimate, theme_counts=counts, batch=batch,
                      album_spend_usd=cache.album_spend(album.uuid))
 
 

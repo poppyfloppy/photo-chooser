@@ -84,20 +84,23 @@ def _stage_usd(n: int, cfg: CloudCfg, output_per_photo: int, price: Price, extra
 
 
 def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_model: str, judge_model: str,
-                     judge_extra_tokens: int = 0, n_compose: list[int] | None = None) -> float:
+                     judge_extra_tokens: int = 0, n_compose: list[int] | None = None, batch: bool = False) -> float:
     """Первая ступень — один проход по n_screen снимкам; вторая — n_judge[i] кандидатов темы i. Превью 4:3.
-    judge_extra_tokens — профиль стиля и скриншоты-образцы в каждой группе второй ступени (FR-11.6)."""
-    total = _stage_usd(n_screen, cfg, EST_OUTPUT_TOKENS_SCREEN, price_for(cfg, screen_model)) if n_screen else 0.0
+    judge_extra_tokens — профиль стиля и скриншоты-образцы в каждой группе второй ступени (FR-11.6).
+    batch — вторая ступень и сборка пакетом со скидкой; кэш мета-блока не учитывается: попадание в него
+    не гарантировано, оценка чуть выше факта (FR-9.1)."""
+    screen = _stage_usd(n_screen, cfg, EST_OUTPUT_TOKENS_SCREEN, price_for(cfg, screen_model)) if n_screen else 0.0
+    rest = 0.0
     if any(n > 0 for n in n_judge):
         judge_price = price_for(cfg, judge_model)
-        total += sum(_stage_usd(n, cfg, EST_OUTPUT_TOKENS_JUDGE, judge_price, judge_extra_tokens) for n in n_judge)
+        rest += sum(_stage_usd(n, cfg, EST_OUTPUT_TOKENS_JUDGE, judge_price, judge_extra_tokens) for n in n_judge)
     if any(n > 0 for n in n_compose or []):
         judge_price = price_for(cfg, judge_model)
         side = cfg.preview_long_side_px
         per_image = image_tokens(side, side * 3 // 4, side) + COMPOSE_LABEL_TOKENS
-        total += sum(usage_usd(TokenUsage(input=n * per_image + PROMPT_OVERHEAD_TOKENS + judge_extra_tokens,
-                                          output=EST_OUTPUT_TOKENS_COMPOSE), judge_price) for n in n_compose if n > 0)
-    return total
+        rest += sum(usage_usd(TokenUsage(input=n * per_image + PROMPT_OVERHEAD_TOKENS + judge_extra_tokens,
+                                         output=EST_OUTPUT_TOKENS_COMPOSE), judge_price) for n in n_compose if n > 0)
+    return screen + (rest * BATCH_DISCOUNT if batch else rest)
 
 
 def check_budget(spent: float, estimate: float, limit: float) -> None:

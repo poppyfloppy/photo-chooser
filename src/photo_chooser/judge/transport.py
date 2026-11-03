@@ -1,12 +1,15 @@
 """Отправка запросов к модели (SPEC §9, D16). Раннеры этапов строят запросы, транспорт их отправляет:
-SyncTransport — параллельные запросы с повторами и строками хода (FR-7.2).
+SyncTransport — параллельные запросы с повторами и строками хода (FR-7.2); BatchTransport — один пакет
+Message Batches на этап, ожидание и разбор результатов (FR-12).
 
 Задание (Job) — запрос и обработчик ответа: обработчик сам разбирает ответ, пишет его в кэш и расход, поэтому
 оплаченный ответ не теряется ни при ошибке другого задания, ни при Ctrl+C.
 """
 
+import json
 import time
 from collections.abc import Callable
+from datetime import datetime
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
@@ -15,6 +18,7 @@ import anthropic
 from pydantic import BaseModel
 
 from photo_chooser import keychain
+from photo_chooser.cache import Cache
 from photo_chooser.config import ConfigError
 from photo_chooser.judge.errors import InsufficientCredit, is_billing_error, is_fatal
 
@@ -27,6 +31,10 @@ RATE_LIMIT_ATTEMPTS = 12
 REQUEST_TIMEOUT_S = 300  # без ответа дольше — повтор (SPEC FR-7.2); у SDK по умолчанию 10 минут
 TRANSIENT_RETRIES = 4  # таймаут, сбой сети, ошибка сервера 5xx
 WAIT_NOTICE_S = 30  # строка ожидания, если ответа нет дольше
+POLL_S = 60  # опрос пакета (FR-12.3)
+BATCH_RESULTS_TTL_S = 29 * 24 * 3600  # результаты пакета API хранит 29 дней (FR-12.4)
+BATCH_MAX_BYTES = 100 * 1024 * 1024  # пакет не больше 100 МБ при лимите API 256 МБ (FR-12.2)
+BATCH_LABELS = {"judge": "второй ступени", "compose": "сборки постов"}
 
 Stage = Literal["screen", "judge", "compose"]
 # подпись этапа в строках хода и единица: именительный падеж и родительный множественного
@@ -91,17 +99,13 @@ def _transient(e: Exception) -> str | None:
     return None
 
 
-def call_model(client, req: ModelRequest, notify: Callable[[str], None] = _quiet):
-    """messages.create со схемой ответа в output_config.format: usage и stop_reason доступны и тогда, когда текст
-    ответа не разбирается (refusal с текстом, обрезка по max_tokens). Пауза при 429 и повторы после таймаута,
-    сбоя сети и 5xx сообщаются через notify (FR-7.2); ошибка баланса — InsufficientCredit, без повторов."""
-    kwargs = request_kwargs(req)
+def _with_retries(fn: Callable[[], Any], notify: Callable[[str], None]):
+    """Пауза при 429 и повторы после таймаута, сбоя сети и 5xx сообщаются через notify (FR-7.2); ошибка
+    баланса — InsufficientCredit, без повторов."""
     attempt, retries = 1, 0
     while True:
         try:
-            if req.model in FALLBACK_MODELS:
-                return client.beta.messages.create(**kwargs, betas=[FALLBACK_BETA], fallbacks="default")
-            return client.messages.create(**kwargs)
+            return fn()
         except anthropic.RateLimitError:
             # лимит организации — входные токены в минуту: ждём и пробуем снова
             if attempt == RATE_LIMIT_ATTEMPTS:
@@ -118,6 +122,16 @@ def call_model(client, req: ModelRequest, notify: Callable[[str], None] = _quiet
             retries += 1
             notify(f"  {why} — повторяю запрос ({retries}/{TRANSIENT_RETRIES})")
             time.sleep(min(2 ** retries, 30))
+
+
+def call_model(client, req: ModelRequest, notify: Callable[[str], None] = _quiet):
+    """messages.create со схемой ответа в output_config.format: usage и stop_reason доступны и тогда, когда текст
+    ответа не разбирается (refusal с текстом, обрезка по max_tokens)."""
+    kwargs = request_kwargs(req)
+    if req.model in FALLBACK_MODELS:
+        return _with_retries(lambda: client.beta.messages.create(**kwargs, betas=[FALLBACK_BETA], fallbacks="default"),
+                             notify)
+    return _with_retries(lambda: client.messages.create(**kwargs), notify)
 
 
 @dataclass
@@ -151,11 +165,14 @@ class SyncTransport:
 
     batch = False
 
-    def __init__(self, client, notify: Callable[[str], None] = _quiet):
-        self.client, self.notify = client, notify
+    def __init__(self, client, notify: Callable[[str], None] = _quiet, collector: "BatchTransport | None" = None):
+        self.client, self.notify, self.collector = client, notify, collector
 
     def resume(self, stage: Stage, handler_for, log: Callable[[str], None] = _quiet) -> None:
-        pass  # незабранных пакетов у синхронной отправки не бывает
+        """Незабранные пакеты прерванного пакетного запуска забираются и в синхронном режиме (FR-12.4): ждать
+        пакет дешевле, чем оплатить его запросы второй раз."""
+        if self.collector is not None:
+            self.collector.resume(stage, handler_for, log)
 
     def _send(self, job: Job) -> None:
         job.handle(call_model(self.client, job.make_request(), self.notify))
@@ -197,8 +214,8 @@ class SyncTransport:
                         try:
                             f.result()
                         except Exception as e:  # noqa: BLE001 — разбирается ниже: тема или весь запуск
-                            if is_fatal(e):
-                                fatal = fatal or e
+                            if is_fatal(e) or not isinstance(e, anthropic.APIError):
+                                fatal = fatal or e  # не API — ошибка программы, её не выдаём за сбой темы
                             else:
                                 failed_tags.add(job.tag)
                                 failures.append(JobFailure(job.tag, e))
@@ -213,4 +230,135 @@ class SyncTransport:
                 raise
         if fatal is not None:
             raise fatal
+        return failures
+
+
+class BatchRequestFailed(Exception):
+    def __init__(self, kind: str):
+        super().__init__(f"запрос пакета не выполнен ({kind})")
+
+
+def _error_of(result) -> tuple[str, str]:
+    """Тип и текст ошибки результата errored: result.error — ErrorResponse с вложенной ошибкой."""
+    error = getattr(result.error, "error", None)
+    return getattr(error, "type", None) or "unknown", getattr(error, "message", "") or ""
+
+
+class BatchTransport:
+    """Пакеты Message Batches (FR-12.2): запросы ступени делятся на пакеты не больше BATCH_MAX_BYTES, каждый
+    записывается в кэш сразу после отправки, затем общее ожидание с опросом раз в POLL_S (FR-12.3) и разбор
+    результатов (FR-12.5)."""
+
+    batch = True
+
+    def __init__(self, client, cache: Cache, album_uuid: str, notify: Callable[[str], None] = _quiet):
+        self.client, self.cache, self.album_uuid, self.notify = client, cache, album_uuid, notify
+
+    def resume(self, stage: Stage, handler_for: Callable[[dict], Callable[[Any], None]],
+               log: Callable[[str], None] = _quiet) -> None:
+        """Сначала незабранные пакеты этого альбома и этапа (FR-12.4): ответы — в кэш, расход — в журнал, а
+        недостающее функция этапа отправит заново. Сбои старого пакета не возвращаются."""
+        label = BATCH_LABELS[stage]
+        for pending in self.cache.pending_batches(self.album_uuid, stage):
+            if time.time() - pending.created_at > BATCH_RESULTS_TTL_S:
+                self.cache.mark_batch_collected(pending.batch_id)
+                log(f"  пакет {label} {pending.batch_id} старше 29 дней — результаты в API удалены, пропускаю")
+                continue
+            log(f"  незабранный пакет {label} {pending.batch_id} от "
+                f"{datetime.fromtimestamp(pending.created_at):%Y-%m-%d %H:%M} — забираю результат")
+            try:
+                self._collect(stage, {pending.batch_id: len(pending.metas)},
+                              {cid: handler_for(meta) for cid, meta in pending.metas.items()}, {}, log)
+            except anthropic.NotFoundError:  # другой workspace или пакет удалён: иначе пакетный режим застрянет
+                self.cache.mark_batch_collected(pending.batch_id)
+                log(f"  пакет {label} {pending.batch_id} не найден в API — пропускаю")
+
+    def run(self, stage: Stage, jobs: list[Job], log: Callable[[str], None] = _quiet) -> list[JobFailure]:
+        if not jobs:
+            return []
+        label = BATCH_LABELS[stage]
+        log(f"  пакет {label}: собираю запросов {len(jobs)}")  # кодирование превью — минуты
+        by_id: dict[str, Job] = {}
+        chunks: list[list[dict]] = [[]]
+        size = 0
+        for job in jobs:
+            req = job.make_request()
+            by_id[req.custom_id] = job
+            request = {"custom_id": req.custom_id, "params": request_kwargs(req)}
+            request_size = len(json.dumps(request, ensure_ascii=False).encode("utf-8"))
+            if chunks[-1] and size + request_size > BATCH_MAX_BYTES:  # лимит API — 256 МБ на пакет
+                chunks.append([])
+                size = 0
+            chunks[-1].append(request)
+            size += request_size
+        failures: list[JobFailure] = []
+        totals: dict[str, int] = {}
+        for chunk in chunks:
+            try:
+                batch = _with_retries(lambda chunk=chunk: self.client.messages.batches.create(requests=chunk),
+                                      self.notify)
+            except anthropic.APIError as e:
+                if is_fatal(e):
+                    raise
+                failures += [JobFailure(tag, e) for tag in dict.fromkeys(by_id[r["custom_id"]].tag for r in chunk)]
+                continue
+            self.cache.add_batch(batch.id, self.album_uuid, stage,
+                                 {r["custom_id"]: by_id[r["custom_id"]].meta for r in chunk})
+            log(f"  пакет {label} {batch.id}: отправлен, запросов {len(chunk)}")
+            totals[batch.id] = len(chunk)
+        if not totals:
+            return failures
+        return failures + self._collect(stage, totals, {cid: job.handle for cid, job in by_id.items()},
+                                        {cid: job.tag for cid, job in by_id.items()}, log)
+
+    def _wait(self, stage: Stage, totals: dict[str, int], log: Callable[[str], None]) -> None:
+        """Общее ожидание пакетов ступени; ход — сумма по всем пакетам."""
+        label = BATCH_LABELS[stage]
+        start = time.monotonic()
+        waiting = dict(totals)
+        try:
+            while True:
+                done = sum(totals.values()) - sum(waiting.values())
+                for batch_id, total in list(waiting.items()):
+                    batch = _with_retries(lambda b=batch_id: self.client.messages.batches.retrieve(b), self.notify)
+                    if batch.processing_status == "ended":
+                        del waiting[batch_id]
+                        done += total
+                    else:
+                        # succeeded/errored/… равны нулю до конца обработки пакета — готово всё, что не в processing
+                        done += total - batch.request_counts.processing
+                if not waiting:
+                    log(f"  пакет {label}: готов ({_mmss(time.monotonic() - start)})")
+                    return
+                log(f"  пакет {label}: готово {done} из {sum(totals.values())} запросов "
+                    f"({_mmss(time.monotonic() - start)})")
+                time.sleep(POLL_S)
+        except KeyboardInterrupt:
+            log(f"  пакет {label} {', '.join(waiting)} досчитается на сервере; повторный запуск заберёт результат "
+                "без новой оплаты")
+            raise
+
+    def _collect(self, stage: Stage, totals: dict[str, int], handlers: dict[str, Callable[[Any], None]],
+                 tags: dict[str, str], log: Callable[[str], None]) -> list[JobFailure]:
+        """Ждёт пакеты, отдаёт успешные ответы обработчикам; сбои — по тегам (у незабранного пакета тегов нет).
+        Ошибка баланса поднимается после разбора: успешные ответы уже в кэше."""
+        self._wait(stage, totals, log)
+        failures: list[JobFailure] = []
+        billing = False
+        for batch_id in totals:
+            results = _with_retries(lambda b=batch_id: list(self.client.messages.batches.results(b)), self.notify)
+            for r in results:
+                kind = r.result.type
+                if kind == "succeeded":
+                    handlers[r.custom_id](r.result.message)
+                    continue
+                error_type, message = _error_of(r.result) if kind == "errored" else ("", "")
+                if error_type == "billing_error" or "credit balance" in message.lower():
+                    billing = True
+                elif r.custom_id in tags:
+                    failures.append(JobFailure(tags[r.custom_id], BatchRequestFailed(
+                        f"errored: {error_type}" if kind == "errored" else kind)))
+            self.cache.mark_batch_collected(batch_id)
+        if billing:
+            raise InsufficientCredit()
         return failures

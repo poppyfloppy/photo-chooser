@@ -133,3 +133,12 @@ def test_cached_prefix_first_job_alone(monkeypatch):
                 tag="A", meta={}, handle=lambda resp, i=i: first_done.set() if i == 1 else None) for i in range(1, 6)]
     SyncTransport(FakeClient(h)).run("judge", jobs)
     assert seen == [True] * 4
+
+
+def test_non_api_error_is_raised_not_marked_as_theme_failure():
+    def broken(resp):
+        raise ValueError("bug in parsing")
+
+    jobs = [Job(make_request=lambda: _req("A-1"), tag="A", meta={}, handle=broken)]
+    with pytest.raises(ValueError, match="bug in parsing"):
+        SyncTransport(FakeClient(lambda n, kw: fake_response(text="ok"))).run("judge", jobs)
