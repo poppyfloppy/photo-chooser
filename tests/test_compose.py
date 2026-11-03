@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from conftest import make_asset
-from fakes import FakeClient, fake_response, output_model_of
+from fakes import FakeClient, compose_once, compose_one, fake_response, output_model_of
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme
 from photo_chooser.judge.prompts import (
@@ -22,7 +22,6 @@ from photo_chooser.judge.stages import (
     ComposeSlide,
     ComposeStory,
     compose_input_fingerprint,
-    run_compose,
 )
 from photo_chooser.select import ShotFacts
 from photo_chooser.style import StyleContext
@@ -60,7 +59,7 @@ def compose_handler(out=None, **resp):
 def test_compose_request_shape():
     client = FakeClient(compose_handler())
     cands = _cands()
-    ComposeRunner(client, HAIKU, "medium", _preview).run(THEME, cands, _facts(cands), AppConfig().posts)
+    compose_once(client, ComposeRunner(HAIKU, "medium", _preview), THEME, cands, _facts(cands), AppConfig().posts)
     call = client.calls[0]
     assert call["system"] == COMPOSE_SYSTEM_PROMPT.format(carousels=1, carousel_size=5, stories=9)
     assert output_model_of(call) is ComposeOutput and call["_beta"] is False
@@ -75,7 +74,7 @@ def test_compose_request_shape():
 def test_compose_request_with_style_and_opus():
     client = FakeClient(compose_handler())
     cands = _cands(1)
-    ComposeRunner(client, OPUS, "medium", _preview, style=_style()).run(THEME, cands, _facts(cands), AppConfig().posts)
+    compose_once(client, ComposeRunner(OPUS, "medium", _preview, style=_style()), THEME, cands, _facts(cands), AppConfig().posts)
     call = client.calls[0]
     assert "Плёнка, тёплые тона." in call["system"] and COMPOSE_SCREENSHOTS_NOTE in call["system"]
     assert "feed_score" not in call["system"] and "stories_score" not in call["system"]  # сборка не ставит оценки
@@ -87,7 +86,7 @@ def test_compose_request_with_style_and_opus():
 
 def test_compose_maps_ids_to_assets(tmp_path):
     cands = _cands()
-    outcome = run_compose(ComposeRunner(FakeClient(compose_handler()), HAIKU, "medium", _preview),
+    outcome = compose_one(FakeClient(compose_handler()), ComposeRunner(HAIKU, "medium", _preview),
                           Cache(tmp_path / "c.sqlite"), THEME, cands, _facts(cands), AppConfig(), "album-1")
     [carousel] = outcome.posts.carousels
     assert carousel.title == "Сфинкс" and carousel.slides[0].asset.uuid == "K1"
@@ -101,7 +100,7 @@ def test_compose_cache_reuse_and_invalidation(tmp_path):
     client = FakeClient(compose_handler())
 
     def run(facts, style=None):
-        return run_compose(ComposeRunner(client, HAIKU, "medium", _preview, style=style), cache, THEME, cands, facts,
+        return compose_one(client, ComposeRunner(HAIKU, "medium", _preview, style=style), cache, THEME, cands, facts,
                            cfg, "album-1")
 
     run(_facts(cands))
@@ -136,7 +135,7 @@ def test_compose_label_strength_and_interesting():
     client = FakeClient(compose_handler())
     cands = [make_asset(uuid="H1"), make_asset(uuid="H2")]  # обе горизонтальные
     facts = {"H1": ShotFacts(8, True, "r", "", ""), "H2": ShotFacts(6, False, "r", "", "")}
-    ComposeRunner(client, HAIKU, "medium", _preview).run(THEME, cands, facts, AppConfig().posts)
+    compose_once(client, ComposeRunner(HAIKU, "medium", _preview), THEME, cands, facts, AppConfig().posts)
     content = client.calls[0]["messages"][0]["content"]
     labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
     assert labels == ["id: c01 (horizontal) · сила 8 · интересное · «r»", "id: c02 (horizontal) · сила 6 · «r»"]
@@ -144,9 +143,9 @@ def test_compose_label_strength_and_interesting():
 
 def test_compose_records_spend_once(tmp_path):
     cache, cands = Cache(tmp_path / "c.sqlite"), _cands()
-    runner = ComposeRunner(FakeClient(compose_handler()), HAIKU, "medium", _preview)
-    run_compose(runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
-    run_compose(runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
+    runner = ComposeRunner(HAIKU, "medium", _preview)
+    compose_one(FakeClient(compose_handler()), runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
+    compose_one(FakeClient(compose_handler()), runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
     assert cache.album_spend("album-1") == pytest.approx(USD)
 
 
@@ -154,11 +153,11 @@ def test_compose_refusal_returns_none(tmp_path):
     cache, cands = Cache(tmp_path / "c.sqlite"), _cands()
     client = FakeClient(lambda n, kw: fake_response(text="I can't", stop_reason="refusal", input_tokens=30_000,
                                                      output_tokens=10))
-    outcome = run_compose(ComposeRunner(client, HAIKU, "medium", _preview), cache, THEME, cands, _facts(cands),
+    outcome = compose_one(client, ComposeRunner(HAIKU, "medium", _preview), cache, THEME, cands, _facts(cands),
                           AppConfig(), "album-1")
     assert outcome.posts is None and outcome.refused
     assert cache.album_spend("album-1") == pytest.approx(30_000 * 0.10 / 1e6 + 10 * 0.50 / 1e6)
-    run_compose(ComposeRunner(client, HAIKU, "medium", _preview), cache, THEME, cands, _facts(cands), AppConfig(),
+    compose_one(client, ComposeRunner(HAIKU, "medium", _preview), cache, THEME, cands, _facts(cands), AppConfig(),
                 "album-1")
     assert len(client.calls) == 2  # отказ не кэшируется
 
@@ -166,14 +165,14 @@ def test_compose_refusal_returns_none(tmp_path):
 def test_compose_unparsable_returns_none(tmp_path):
     client = FakeClient(lambda n, kw: fake_response(text='{"carousels": [', stop_reason="max_tokens"))
     cands = _cands()
-    outcome = run_compose(ComposeRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEME, cands,
+    outcome = compose_one(client, ComposeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEME, cands,
                           _facts(cands), AppConfig(), "album-1")
     assert outcome.posts is None and not outcome.refused
 
 
 def test_compose_without_candidates_no_call(tmp_path):
     client = FakeClient(compose_handler())
-    outcome = run_compose(ComposeRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEME, [],
+    outcome = compose_one(client, ComposeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEME, [],
                           {}, AppConfig(), "album-1")
     assert client.calls == [] and outcome.posts.carousels == [] and outcome.posts.stories == []
 
@@ -183,7 +182,7 @@ def test_compose_over_price_threshold_rejected(tmp_path):
     cands = [make_asset(uuid=f"K{i}") for i in range(30)]
     heavy = replace(_style(), extra_tokens=70_000)
     with pytest.raises(ValueError):
-        run_compose(ComposeRunner(client, HAIKU, "medium", _preview, style=heavy), Cache(tmp_path / "c.sqlite"), THEME,
+        compose_one(client, ComposeRunner(HAIKU, "medium", _preview, style=heavy), Cache(tmp_path / "c.sqlite"), THEME,
                     cands, _facts(cands), AppConfig(), "album-1")
     assert client.calls == []
 
@@ -193,17 +192,17 @@ def test_compose_answer_without_known_ids_is_failure(tmp_path):
                         stories=[ComposeStory(id="q1", kind="best", hint="")])
     client = FakeClient(compose_handler(out))
     cache, cands = Cache(tmp_path / "c.sqlite"), _cands()
-    runner = ComposeRunner(client, HAIKU, "medium", _preview)
-    outcome = run_compose(runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
+    runner = ComposeRunner(HAIKU, "medium", _preview)
+    outcome = compose_one(client, runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
     assert outcome.posts is None and not outcome.refused and outcome.note
-    run_compose(runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
+    compose_one(client, runner, cache, THEME, cands, _facts(cands), AppConfig(), "album-1")
     assert len(client.calls) == 2  # не кэшируется
 
 
 def test_compose_empty_answer_is_valid_nothing(tmp_path):
     client = FakeClient(compose_handler(ComposeOutput(carousels=[], stories=[])))
     cands = _cands()
-    outcome = run_compose(ComposeRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEME, cands,
+    outcome = compose_one(client, ComposeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEME, cands,
                           _facts(cands), AppConfig(), "album-1")
     assert outcome.posts is not None and outcome.posts.carousels == [] and outcome.posts.stories == []
 

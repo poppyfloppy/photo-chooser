@@ -13,7 +13,7 @@ import pytest
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme, TripConfig
 from photo_chooser.judge.prompts import JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
-from photo_chooser.judge.stages import make_client
+from photo_chooser.judge.transport import make_client
 from photo_chooser.library.photokit_library import PhotoKitLibrary
 from photo_chooser.pipeline import RunOptions, run
 

@@ -142,6 +142,57 @@ def last_text(content: list[dict]) -> str:
     return [b["text"] for b in content if b["type"] == "text"][-1]
 
 
+def _quiet(message: str) -> None:
+    pass
+
+
+def send(client, req, notify=None):
+    """Один запрос синхронно, как его отправляет SyncTransport."""
+    from photo_chooser.judge.transport import call_model
+
+    return call_model(client, req, notify or _quiet)
+
+
+def screen_group(client, runner, album_title, themes, group, notify=None):
+    return runner.parse(send(client, runner.request(album_title, themes, group, "s-001"), notify), themes,
+                        [a.uuid for a in group])
+
+
+def judge_group(client, runner, theme, group, notify=None):
+    from photo_chooser.judge.stages import orientation
+
+    return runner.parse(send(client, runner.request(theme, group, "j-test-01"), notify),
+                        [(a.uuid, orientation(a)) for a in group])
+
+
+def compose_once(client, runner, theme, cands, facts, limits):
+    return runner.parse(send(client, runner.request(theme, cands, facts, limits, "c-test")))
+
+
+def screen_run(client, runner, cache, album_title, album_uuid, themes, assets, cfg, log=None):
+    from photo_chooser.judge.stages import run_screen
+    from photo_chooser.judge.transport import SyncTransport
+
+    return run_screen(runner, SyncTransport(client), cache, album_title, album_uuid, themes, assets, cfg, log or _quiet)
+
+
+def judge_one(client, runner, cache, theme, assets, order, cfg, album_uuid, log=None):
+    """Вторая ступень одной темы через синхронный транспорт; исход этой темы."""
+    from photo_chooser.judge.stages import JudgeTask, run_judge
+    from photo_chooser.judge.transport import SyncTransport
+
+    return run_judge(runner, SyncTransport(client), cache, [JudgeTask(theme, assets, order)], cfg, album_uuid,
+                     log or _quiet)[theme.key()]
+
+
+def compose_one(client, runner, cache, theme, cands, facts, cfg, album_uuid, log=None):
+    from photo_chooser.judge.stages import ComposeTask, run_compose
+    from photo_chooser.judge.transport import SyncTransport
+
+    return run_compose(runner, SyncTransport(client), cache, [ComposeTask(theme, cands, facts)], cfg, album_uuid,
+                       log or _quiet)[theme.key()]
+
+
 class _Messages:
     def __init__(self, owner: "FakeClient", beta: bool):
         self._owner, self._beta = owner, beta

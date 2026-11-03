@@ -6,10 +6,22 @@ import anthropic
 import pytest
 
 from conftest import make_asset
-from fakes import FakeClient, api_error, fake_response, ids_in, last_text, output_model_of, rate_limit_error
+from fakes import (
+    FakeClient,
+    api_error,
+    fake_response,
+    ids_in,
+    judge_group,
+    judge_one,
+    last_text,
+    output_model_of,
+    rate_limit_error,
+    screen_group,
+    screen_run,
+)
 from photo_chooser.cache import Cache
 from photo_chooser.config import CloudCfg, Theme, themes_key
-from photo_chooser.judge import stages
+from photo_chooser.judge import transport
 from photo_chooser.judge.prompts import (
     JUDGE_PROMPT_VERSION,
     JUDGE_SYSTEM_PROMPT,
@@ -23,12 +35,12 @@ from photo_chooser.judge.stages import (
     ScreenItem,
     ScreenMatch,
     ScreenOutput,
+    JudgeTask,
     ScreenRunner,
-    call_model,
     make_groups,
     run_judge,
-    run_screen,
 )
+from photo_chooser.judge.transport import ModelRequest, SyncTransport, call_model
 
 HAIKU = "claude-haiku-5-5"
 THEMES = [Theme(name="Пирамиды в Гиза", query="Пирамиды в Гиза"), Theme(name="GEM", query="Большой Египетский музей"),
@@ -82,7 +94,7 @@ def test_make_groups_spreads_order():
 def test_screen_maps_theme_numbers_to_keys():
     client = FakeClient(screen_handler(matches=lambda i: [ScreenMatch(theme=2, relevance=8)]))
     a = _assets(1)
-    result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, a)
+    result = screen_group(client, ScreenRunner(HAIKU, "medium", _preview), "Egypt.26", THEMES, a)
     assert result.items[0].uuid == "U000"
     assert result.items[0].relevance == {THEMES[1].screen_key(): 8}
     assert result.items[0].score == 6
@@ -91,14 +103,14 @@ def test_screen_maps_theme_numbers_to_keys():
 def test_screen_drops_unknown_theme_numbers_and_clamps():
     matches = [ScreenMatch(theme=9, relevance=7), ScreenMatch(theme=1, relevance=12), ScreenMatch(theme=0, relevance=6)]
     client = FakeClient(screen_handler(matches=lambda i: matches))
-    result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(1))
+    result = screen_group(client, ScreenRunner(HAIKU, "medium", _preview), "Egypt.26", THEMES, _assets(1))
     assert result.items[0].relevance == {THEMES[0].screen_key(): 10}
 
 
 @pytest.mark.parametrize("raw, clamped", [(0, 1), (11, 10)])
 def test_screen_score_clamped(raw, clamped):
     client = FakeClient(screen_handler(score=raw))
-    result = ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(1))
+    result = screen_group(client, ScreenRunner(HAIKU, "medium", _preview), "Egypt.26", THEMES, _assets(1))
     assert result.items[0].score == clamped
 
 
@@ -122,7 +134,7 @@ def test_screen_prompt_harmonious_portrait():
 
 def test_screen_request_lists_album_and_themes():
     client = FakeClient(screen_handler())
-    ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _assets(2))
+    screen_group(client, ScreenRunner(HAIKU, "medium", _preview), "Egypt.26", THEMES, _assets(2))
     content = client.calls[0]["messages"][0]["content"]
     assert ids_in(content) == ["p01", "p02"]
     assert _sent_uuids(client.calls[0]) == ["U000", "U001"]
@@ -137,25 +149,25 @@ def test_screen_request_lists_album_and_themes():
 def test_screen_cache_keyed_by_theme_set(tmp_path):
     cache, cfg, assets = Cache(tmp_path / "c.sqlite"), CloudCfg(), _assets(3)
     client = FakeClient(screen_handler())
-    runner = ScreenRunner(client, HAIKU, "medium", _preview)
-    first = run_screen(runner, cache, "Egypt.26", "album-1", THEMES[:2], assets, cfg)
+    runner = ScreenRunner(HAIKU, "medium", _preview)
+    first = screen_run(client, runner, cache, "Egypt.26", "album-1", THEMES[:2], assets, cfg)
     assert len(client.calls) == 1 and first.sent == 3 and first.from_cache == 0
     assert first.usd == pytest.approx(GROUP_USD)
-    again = run_screen(runner, cache, "Egypt.26", "album-1", THEMES[:2], assets, cfg)
+    again = screen_run(client, runner, cache, "Egypt.26", "album-1", THEMES[:2], assets, cfg)
     assert len(client.calls) == 1 and again.sent == 0 and again.from_cache == 3 and again.usd == 0
     assert again.results == first.results
-    run_screen(runner, cache, "Egypt.26", "album-1", THEMES[:3], assets, cfg)
+    screen_run(client, runner, cache, "Egypt.26", "album-1", THEMES[:3], assets, cfg)
     assert len(client.calls) == 2
     key = themes_key("Egypt.26", THEMES[:2])
     assert cache.get_screening("U000", key, HAIKU, SCREEN_PROMPT_VERSION) == first.results["U000"]
 
 
 def test_screen_groups_follow_capture_time(tmp_path, monkeypatch):
-    monkeypatch.setattr(stages, "MAX_PARALLEL_REQUESTS", 1)
+    monkeypatch.setattr(transport, "MAX_PARALLEL_REQUESTS", 1)
     assets = _assets(25)
     shuffled = random.Random(3).sample(assets, len(assets))
     client = FakeClient(screen_handler())
-    run_screen(ScreenRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), "Egypt.26",
+    screen_run(client, ScreenRunner(HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), "Egypt.26",
                "album-1", THEMES, shuffled, CloudCfg())
     assert _sent_uuids(client.calls[0]) == [f"U{i:03d}" for i in range(20)]
     assert _sent_uuids(client.calls[1]) == [f"U{i:03d}" for i in range(20, 25)]
@@ -170,7 +182,7 @@ def test_judge_maps_short_ids_and_clamps():
                       crop_stories="")]))
 
     client = FakeClient(handler)
-    result = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(2))
+    result = judge_group(client, JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _assets(2))
     by_uuid = {j.uuid: j for j in result.items}
     assert (by_uuid["U001"].matches_theme, by_uuid["U001"].score) == (False, 1)
     assert by_uuid["U000"].reason == "Сфинкс крупно"
@@ -189,12 +201,12 @@ def test_missing_ids_are_unjudged(tmp_path):
                       crop_stories="")]))
 
     client = FakeClient(handler)
-    runner = JudgeRunner(client, HAIKU, "medium", _preview)
+    runner = JudgeRunner(HAIKU, "medium", _preview)
     order = {"U000": 3.0, "U001": 2.0, "U002": 1.0}
-    outcome = run_judge(runner, cache, THEMES[0], assets, order, cfg, "album-1")
+    outcome = judge_one(client, runner, cache, THEMES[0], assets, order, cfg, "album-1")
     assert set(outcome.results) == {"U000"}
     assert sorted(outcome.unjudged) == ["U001", "U002"]
-    run_judge(runner, cache, THEMES[0], assets, order, cfg, "album-1")
+    judge_one(client, runner, cache, THEMES[0], assets, order, cfg, "album-1")
     assert _sent_uuids(client.calls[1]) == ["U001", "U002"]  # неоценённые не кэшируются и уходят снова
 
 
@@ -202,28 +214,29 @@ def test_refusal_marks_group_unjudged(tmp_path):
     cache = Cache(tmp_path / "c.sqlite")
     client = FakeClient(lambda n, kw: fake_response(None, stop_reason="refusal", input_tokens=30_000,
                                                      output_tokens=100))
-    runner = JudgeRunner(client, HAIKU, "medium", _preview)
+    runner = JudgeRunner(HAIKU, "medium", _preview)
     group = _assets(2)
-    result = runner.run_group(THEMES[0], group)
+    result = judge_group(client, runner, THEMES[0], group)
     assert result.refused and result.items == [] and result.unjudged == ["U000", "U001"]
     assert (result.input_tokens, result.output_tokens) == (30_000, 100)
-    outcome = run_judge(runner, cache, THEMES[0], group, {}, CloudCfg(), "album-1")
+    outcome = judge_one(client, runner, cache, THEMES[0], group, {}, CloudCfg(), "album-1")
     assert outcome.results == {} and sorted(outcome.unjudged) == ["U000", "U001"]
     assert cache.album_spend("album-1") == pytest.approx(30_000 * 0.10 / 1e6 + 100 * 0.50 / 1e6)
 
 
 def test_interrupted_run_does_not_pay_twice(tmp_path, monkeypatch):
-    monkeypatch.setattr(stages, "MAX_PARALLEL_REQUESTS", 1)
+    monkeypatch.setattr(transport, "MAX_PARALLEL_REQUESTS", 1)
     cache, cfg, assets = Cache(tmp_path / "c.sqlite"), CloudCfg(), _assets(50)
     order = {a.uuid: float(i) for i, a in enumerate(assets)}
     ok = judge_handler()
     failing = FakeClient(lambda n, kw: api_error() if n == 2 else ok(n, kw))
-    with pytest.raises(anthropic.APIStatusError):
-        run_judge(JudgeRunner(failing, HAIKU, "medium", _preview), cache, THEMES[0], assets, order, cfg, "album-1")
-    assert len(failing.calls) == 2
+    failed = judge_one(failing, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, order, cfg,
+                       "album-1")
+    assert isinstance(failed.error, anthropic.APIStatusError)
+    assert len(failing.calls) == 2  # после ошибки оставшиеся группы темы не отправляются
     assert cache.album_spend("album-1") == pytest.approx(GROUP_USD)
     working = FakeClient(ok)
-    outcome = run_judge(JudgeRunner(working, HAIKU, "medium", _preview), cache, THEMES[0], assets, order, cfg,
+    outcome = judge_one(working, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, order, cfg,
                         "album-1")
     assert len(working.calls) == 2
     assert len(outcome.results) == 50 and outcome.from_cache == 17
@@ -234,8 +247,8 @@ def test_parallel_failure_keeps_completed_groups(tmp_path):
     cache, cfg, assets = Cache(tmp_path / "c.sqlite"), CloudCfg(), _assets(60)
     ok = judge_handler()
     client = FakeClient(lambda n, kw: api_error() if n == 1 else ok(n, kw))
-    with pytest.raises(anthropic.APIStatusError):
-        run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, cfg, "album-1")
+    outcome = judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, cfg, "album-1")
+    assert isinstance(outcome.error, anthropic.APIStatusError)
     paid = len(client.calls) - 1
     assert cache.album_spend("album-1") == pytest.approx(paid * GROUP_USD)
     cached = [a for a in assets if cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, JUDGE_PROMPT_VERSION)]
@@ -244,25 +257,25 @@ def test_parallel_failure_keeps_completed_groups(tmp_path):
 
 def test_rate_limit_waits_and_retries(monkeypatch):
     sleeps = []
-    monkeypatch.setattr(stages.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(transport.time, "sleep", lambda s: sleeps.append(s))
     ok = judge_handler()
     client = FakeClient(lambda n, kw: rate_limit_error() if n <= 2 else ok(n, kw))
-    result = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(2))
+    result = judge_group(client, JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _assets(2))
     assert len(result.items) == 2
     assert sleeps == [20, 20]
 
 
 def test_rate_limit_gives_up_after_12_attempts(monkeypatch):
-    monkeypatch.setattr(stages.time, "sleep", lambda s: None)
+    monkeypatch.setattr(transport.time, "sleep", lambda s: None)
     client = FakeClient(lambda n, kw: rate_limit_error())
     with pytest.raises(anthropic.RateLimitError):
-        call_model(client, HAIKU, "medium", "system", [{"type": "text", "text": "x"}], JudgeOutput)
+        call_model(client, ModelRequest("t", HAIKU, "medium", "system", [{"type": "text", "text": "x"}], JudgeOutput))
     assert len(client.calls) == 12
 
 
 def test_request_shape():
     client = FakeClient(screen_handler())
-    ScreenRunner(client, HAIKU, "low", _preview).run_group("Egypt.26", THEMES, _assets(1))
+    screen_group(client, ScreenRunner(HAIKU, "low", _preview), "Egypt.26", THEMES, _assets(1))
     call = client.calls[0]
     assert call["_beta"] is False
     assert call["model"] == HAIKU and call["max_tokens"] == 16000
@@ -273,7 +286,7 @@ def test_request_shape():
     assert [m["role"] for m in call["messages"]] == ["user"]
     assert not {"thinking", "betas", "fallbacks", "output_format"} & set(call)
     judge_client = FakeClient(judge_handler())
-    JudgeRunner(judge_client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(1))
+    judge_group(judge_client, JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _assets(1))
     assert judge_client.calls[0]["system"] == JUDGE_SYSTEM_PROMPT
     assert output_model_of(judge_client.calls[0]) is JudgeOutput
 
@@ -281,7 +294,7 @@ def test_request_shape():
 @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5"])
 def test_opus_and_sonnet_use_server_side_fallbacks(model):
     client = FakeClient(judge_handler())
-    JudgeRunner(client, model, "high", _preview).run_group(THEMES[0], _assets(1))
+    judge_group(client, JudgeRunner(model, "high", _preview), THEMES[0], _assets(1))
     call = client.calls[0]
     assert call["_beta"] is True
     assert call["betas"] == ["server-side-fallback-2026-07-01"]
@@ -293,7 +306,7 @@ def test_group_over_haiku_price_threshold_rejected(tmp_path):
     client = FakeClient(judge_handler())
     cfg = CloudCfg(group_size=100)
     with pytest.raises(ValueError):
-        run_judge(JudgeRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEMES[0],
+        judge_one(client, JudgeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEMES[0],
                   _assets(100), {}, cfg, "album-1")
     assert client.calls == []
 
@@ -303,7 +316,7 @@ def test_truncated_response_records_actual_usage(tmp_path):
     client = FakeClient(lambda n, kw: fake_response(text='{"items": [{"id": "p01", "matc', stop_reason="max_tokens",
                                                      input_tokens=30_000, output_tokens=16_000))
     cache = Cache(tmp_path / "c.sqlite")
-    outcome = run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], _assets(2), {}, CloudCfg(),
+    outcome = judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], _assets(2), {}, CloudCfg(),
                         "album-1")
     assert outcome.results == {} and sorted(outcome.unjudged) == ["U000", "U001"]
     assert cache.album_spend("album-1") == pytest.approx(30_000 * 0.10 / 1e6 + 16_000 * 0.50 / 1e6)
@@ -311,23 +324,23 @@ def test_truncated_response_records_actual_usage(tmp_path):
 
 def test_refusal_with_text_is_refused():
     client = FakeClient(lambda n, kw: fake_response(text="I can't help with that.", stop_reason="refusal"))
-    result = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(1))
+    result = judge_group(client, JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _assets(1))
     assert result.refused and result.unjudged == ["U000"]
 
 
 def test_interrupt_keeps_completed_groups(tmp_path, monkeypatch):
     # Ctrl+C в главном потоке, пока группы в работе: оплаченные ответы всё равно записываются
-    real_wait = stages.wait
+    real_wait = transport.wait
 
     def interrupted_wait(fs, timeout=None, return_when=None):
         real_wait(fs)  # все запущенные группы завершились
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(stages, "wait", interrupted_wait)
+    monkeypatch.setattr(transport, "wait", interrupted_wait)
     cache, assets = Cache(tmp_path / "c.sqlite"), _assets(60)
     client = FakeClient(judge_handler())
     with pytest.raises(KeyboardInterrupt):
-        run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+        judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 3
     assert cache.album_spend("album-1") == pytest.approx(3 * GROUP_USD)
     assert all(cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, JUDGE_PROMPT_VERSION) for a in assets)
@@ -341,7 +354,7 @@ def test_judge1_cache_not_reused_after_rubric_change(tmp_path):
     old = [Judgment(uuid=a.uuid, matches_theme=True, score=5, reason="есть люди") for a in assets]
     cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-1")
     client = FakeClient(judge_handler())
-    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 1
 
 
@@ -352,7 +365,7 @@ def test_screen1_cache_not_reused_after_rubric_change(tmp_path):
     old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, score=5) for a in assets]
     cache.put_screenings(old, themes_key("Egypt.26", THEMES[:2]), HAIKU, "screen-1")
     client = FakeClient(screen_handler())
-    run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
+    screen_run(client, ScreenRunner(HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
                CloudCfg())
     assert len(client.calls) == 1
 
@@ -365,7 +378,7 @@ def test_screen2_cache_not_reused(tmp_path):
     old = [Screening(uuid=a.uuid, relevance={THEMES[0].screen_key(): 8}, score=5) for a in assets]
     cache.put_screenings(old, themes_key("Egypt.26", THEMES[:2]), HAIKU, "screen-2")
     client = FakeClient(screen_handler())
-    run_screen(ScreenRunner(client, HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
+    screen_run(client, ScreenRunner(HAIKU, "medium", _preview), cache, "Egypt.26", "album-1", THEMES[:2], assets,
                CloudCfg())
     assert len(client.calls) == 1
 
@@ -381,8 +394,8 @@ def _style(fp="ab12cd34", refs=(("feed", b"REF1"), ("stories", b"REF2"))):
 
 def test_judge_with_style_request():
     client = FakeClient(judge_handler())
-    runner = JudgeRunner(client, HAIKU, "medium", _preview, style=_style())
-    runner.run_group(THEMES[0], _assets(2))
+    runner = JudgeRunner(HAIKU, "medium", _preview, style=_style())
+    judge_group(client, runner, THEMES[0], _assets(2))
     call = client.calls[0]
     assert call["system"].startswith(JUDGE_SYSTEM_PROMPT) and "Тёплый свет, минимализм." in call["system"]
     assert "do not score them" in call["system"]  # скриншоты приложены — оговорка на месте
@@ -399,7 +412,7 @@ def test_judge_cache_keyed_by_style_fingerprint(tmp_path):
     client = FakeClient(judge_handler())
 
     def run(style):
-        run_judge(JudgeRunner(client, HAIKU, "medium", _preview, style=style), cache, THEMES[0], assets, {},
+        judge_one(client, JudgeRunner(HAIKU, "medium", _preview, style=style), cache, THEMES[0], assets, {},
                   CloudCfg(), "album-1")
 
     run(_style("aaaa1111"))
@@ -411,8 +424,8 @@ def test_judge_cache_keyed_by_style_fingerprint(tmp_path):
 
 def test_judge_without_style_unchanged():
     client = FakeClient(judge_handler())
-    runner = JudgeRunner(client, HAIKU, "medium", _preview)
-    runner.run_group(THEMES[0], _assets(1))
+    runner = JudgeRunner(HAIKU, "medium", _preview)
+    judge_group(client, runner, THEMES[0], _assets(1))
     assert runner.prompt_version == JUDGE_PROMPT_VERSION and runner.extra_input_tokens == 0
     assert client.calls[0]["system"] == JUDGE_SYSTEM_PROMPT
     assert client.calls[0]["messages"][0]["content"][0]["text"] == "id: p01 (horizontal)"
@@ -422,13 +435,13 @@ def test_style_tokens_count_toward_price_threshold(tmp_path):
     # 80 превью ≈ 84 тыс. токенов — меньше порога; со стилем на 20 тыс. — уже больше
     client = FakeClient(judge_handler())
     cfg = CloudCfg(group_size=80)
-    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), Cache(tmp_path / "a.sqlite"), THEMES[0], _assets(80),
+    judge_one(client, JudgeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "a.sqlite"), THEMES[0], _assets(80),
               {}, cfg, "album-1")
     from dataclasses import replace
 
     heavy = replace(_style(), extra_tokens=20_000)
     with pytest.raises(ValueError):
-        run_judge(JudgeRunner(client, HAIKU, "medium", _preview, style=heavy), Cache(tmp_path / "b.sqlite"),
+        judge_one(client, JudgeRunner(HAIKU, "medium", _preview, style=heavy), Cache(tmp_path / "b.sqlite"),
                   THEMES[0], _assets(80), {}, cfg, "album-1")
 
 
@@ -436,7 +449,7 @@ def test_style_tokens_count_toward_price_threshold(tmp_path):
 def test_judge_style_without_screenshots_omits_screenshot_note():
     # reference_images: 0 или альбома нет — модель не должна искать образцы среди кандидатов
     client = FakeClient(judge_handler())
-    JudgeRunner(client, HAIKU, "medium", _preview, style=_style(refs=())).run_group(THEMES[0], _assets(2))
+    judge_group(client, JudgeRunner(HAIKU, "medium", _preview, style=_style(refs=())), THEMES[0], _assets(2))
     call = client.calls[0]
     assert "Тёплый свет, минимализм." in call["system"]
     from photo_chooser.judge.prompts import STYLE_SCREENSHOTS_NOTE
@@ -457,13 +470,13 @@ def _oriented():
 
 def test_judge_labels_orientation():
     client = FakeClient(judge_handler())
-    JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _oriented())
+    judge_group(client, JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _oriented())
     assert _labels(client.calls[0]) == ["id: p01 (horizontal)", "id: p02 (vertical)", "id: p03 (square)"]
 
 
 def test_screen_labels_stay_plain():
     client = FakeClient(screen_handler())
-    ScreenRunner(client, HAIKU, "medium", _preview).run_group("Egypt.26", THEMES, _oriented())
+    screen_group(client, ScreenRunner(HAIKU, "medium", _preview), "Egypt.26", THEMES, _oriented())
     assert _labels(client.calls[0]) == ["id: p01", "id: p02", "id: p03"]
 
 
@@ -477,7 +490,7 @@ def test_judge_maps_crop_advice_and_clears_vertical():
             JudgeItem(id="p03", matches_theme=True, score=8, interesting=False, reason="r",
                       crop_feed=" Пирамида по центру ", crop_stories="")]))
 
-    result = JudgeRunner(FakeClient(handler), HAIKU, "medium", _preview).run_group(THEMES[0], _oriented())
+    result = judge_group(FakeClient(handler), JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _oriented())
     by = {j.uuid: j for j in result.items}
     assert (by["H"].crop_feed, by["H"].crop_stories) == ("Оставить сфинкса справа", "Сфинкс по центру, небо сверху")
     assert (by["V"].crop_feed, by["V"].crop_stories) == ("", "")  # вертикальный кадр кадрировать не нужно
@@ -490,7 +503,7 @@ def test_judge_id_with_orientation_suffix_still_maps():
                                                           interesting=False, reason="r", crop_feed="",
                                                           crop_stories="")]))
 
-    result = JudgeRunner(FakeClient(handler), HAIKU, "medium", _preview).run_group(THEMES[0], _oriented()[:1])
+    result = judge_group(FakeClient(handler), JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _oriented()[:1])
     assert [j.uuid for j in result.items] == ["H"] and result.unjudged == []
 
 
@@ -501,7 +514,7 @@ def test_judge2_cache_not_reused_after_crop_advice(tmp_path):
     old = [Judgment(uuid=a.uuid, matches_theme=True, score=7, reason="r") for a in assets]
     cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-2")
     client = FakeClient(judge_handler())
-    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 1
 
 
@@ -513,7 +526,7 @@ def test_judge3_cache_not_reused_after_potential_rubric(tmp_path):
     old = [Judgment(uuid=a.uuid, matches_theme=True, score=4, reason="r") for a in assets]
     cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-3")
     client = FakeClient(judge_handler())
-    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 1
 
 
@@ -522,7 +535,7 @@ def test_judge_reference_labels_per_kind():
 
     refs = (("feed", b"F1"), ("feed", b"F2"), ("stories", b"S1"))
     client = FakeClient(judge_handler())
-    JudgeRunner(client, HAIKU, "medium", _preview, style=_style(refs=refs)).run_group(THEMES[0], _assets(1))
+    judge_group(client, JudgeRunner(HAIKU, "medium", _preview, style=_style(refs=refs)), THEMES[0], _assets(1))
     content = client.calls[0]["messages"][0]["content"]
     labels = [content[i]["text"] for i in (0, 2, 4)]
     assert labels == [STYLE_REFERENCE_LABELS["feed"], STYLE_REFERENCE_LABELS["feed"], STYLE_REFERENCE_LABELS["stories"]]
@@ -562,13 +575,13 @@ def test_judge5_cache_not_reused(tmp_path):
     old = [Judgment(uuid=a.uuid, matches_theme=True, score=7, reason="r") for a in assets]
     cache.put_judgments(old, THEMES[0].key(), HAIKU, "judge-5")
     client = FakeClient(judge_handler())
-    run_judge(JudgeRunner(client, HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
+    judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 1
 
 
 def test_judge_score_clamped_and_interesting_kept():
     client = FakeClient(judge_handler(score=11, interesting=True))
-    [j] = JudgeRunner(client, HAIKU, "medium", _preview).run_group(THEMES[0], _assets(1)).items
+    [j] = judge_group(client, JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _assets(1)).items
     assert j.score == 10 and j.interesting is True
 
 
@@ -578,3 +591,22 @@ def test_judge_prompt_harmonious_portrait():
     for phrase in ("only when the photo is harmonious", "small against the place", "whole figure", "bokeh",
                    "feet or legs cut off", "awkward pose", "never raise a photo just because the traveller is in it"):
         assert phrase in JUDGE_SYSTEM_PROMPT
+
+
+def test_judge_handler_from_meta_writes_cache_and_spend(tmp_path):
+    # обработчик строится только из meta — так пакетный режим заберёт ответ в следующем запуске (FR-12.4)
+    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
+    meta = {"theme_key": THEMES[0].key(), "model": HAIKU, "prompt_version": JUDGE_PROMPT_VERSION, "batch": False,
+            "shots": [[a.uuid, "horizontal"] for a in assets]}
+    answer = judge_handler()(1, {"messages": [{"content": [{"type": "text", "text": "id: p01 (horizontal)"},
+                                                           {"type": "text", "text": "id: p02 (horizontal)"}]}]})
+
+    class Resuming(SyncTransport):
+        def resume(self, stage, handler_for, log=None):
+            handler_for(meta)(answer)
+
+    client = FakeClient(judge_handler())
+    outcomes = run_judge(JudgeRunner(HAIKU, "medium", _preview), Resuming(client), cache,
+                         [JudgeTask(THEMES[0], assets, {})], CloudCfg(), "album-1")
+    assert outcomes[THEMES[0].key()].from_cache == 2 and client.calls == []
+    assert cache.album_spend("album-1") == pytest.approx(GROUP_USD)
