@@ -201,32 +201,88 @@ def compose_one(client, runner, cache, theme, cands, facts, cfg, album_uuid, log
                        log or _quiet)[theme.key()]
 
 
+EXPIRED = object()  # ответ заглушки: запрос пакета просрочен (FR-12.5)
+
+
+def _batch_result(custom_id: str, outcome):
+    if outcome is EXPIRED:
+        return SimpleNamespace(custom_id=custom_id, result=SimpleNamespace(type="expired"))
+    if isinstance(outcome, BaseException):
+        error = SimpleNamespace(type=getattr(outcome, "type", None) or "api_error", message=str(outcome))
+        return SimpleNamespace(custom_id=custom_id,
+                               result=SimpleNamespace(type="errored", error=SimpleNamespace(type="error", error=error)))
+    return SimpleNamespace(custom_id=custom_id, result=SimpleNamespace(type="succeeded", message=outcome))
+
+
+class _Batches:
+    """messages.batches: create прогоняет запросы через handler сразу, retrieve отдаёт «in_progress» первые polls
+    раз, results — по custom_id. Пакеты живут в заглушке между запусками конвейера (FR-12.4)."""
+
+    def __init__(self, owner: "FakeClient"):
+        self._owner = owner
+        self._batches: dict[str, dict] = {}
+
+    def create(self, requests):
+        if self._owner.batch_create_error is not None:
+            raise self._owner.batch_create_error
+        batch_id = f"msgbatch_{len(self._batches) + 1:03d}"
+        results = [_batch_result(r["custom_id"], self._owner._handle(False, {**r["params"], "_batch": True}))
+                   for r in requests]
+        self._batches[batch_id] = {"results": results, "retrieves": 0}
+        self._owner.created_batches.append(batch_id)
+        return SimpleNamespace(id=batch_id, processing_status="in_progress")
+
+    def retrieve(self, batch_id):
+        b = self._batches[batch_id]
+        b["retrieves"] += 1
+        self._owner.retrieved.append(batch_id)
+        ended = b["retrieves"] > self._owner.batch_polls
+        kinds = [r.result.type for r in b["results"]] if ended else []
+        counts = SimpleNamespace(processing=0 if ended else len(b["results"]), succeeded=kinds.count("succeeded"),
+                                 errored=kinds.count("errored"), canceled=0, expired=kinds.count("expired"))
+        return SimpleNamespace(id=batch_id, processing_status="ended" if ended else "in_progress",
+                               request_counts=counts)
+
+    def results(self, batch_id):
+        self._owner.results_read.append(batch_id)
+        return iter(self._batches[batch_id]["results"])
+
+
 class _Messages:
     def __init__(self, owner: "FakeClient", beta: bool):
         self._owner, self._beta = owner, beta
+        if not beta:
+            self.batches = _Batches(owner)
 
     def create(self, **kwargs):
         return self._owner._call(self._beta, kwargs)
 
 
 class FakeClient:
-    """Заглушка anthropic.Anthropic: handler(n, kwargs) → ответ или исключение; n — номер вызова с 1.
+    """Заглушка anthropic.Anthropic: handler(n, kwargs) → ответ, исключение или EXPIRED; n — номер вызова с 1.
 
-    calls — kwargs каждого вызова (с ключом "_beta"), в порядке поступления.
+    calls — kwargs каждого вызова (с ключом "_beta", у запросов пакета — ещё "_batch"), в порядке поступления.
     """
 
-    def __init__(self, handler):
+    def __init__(self, handler, batch_polls: int = 1, batch_create_error: BaseException | None = None):
         self._handler = handler
         self._lock = threading.Lock()
         self.calls: list[dict] = []
+        self.batch_polls, self.batch_create_error = batch_polls, batch_create_error
+        self.created_batches: list[str] = []
+        self.retrieved: list[str] = []
+        self.results_read: list[str] = []
         self.messages = _Messages(self, beta=False)
         self.beta = SimpleNamespace(messages=_Messages(self, beta=True))
 
-    def _call(self, beta: bool, kwargs: dict):
+    def _handle(self, beta: bool, kwargs: dict):
         with self._lock:
             self.calls.append({**kwargs, "_beta": beta})
             n = len(self.calls)
-        result = self._handler(n, kwargs)
+        return self._handler(n, kwargs)
+
+    def _call(self, beta: bool, kwargs: dict):
+        result = self._handle(beta, kwargs)
         if isinstance(result, BaseException):
             raise result
         return result
