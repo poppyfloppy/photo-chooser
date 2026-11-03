@@ -250,9 +250,11 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
 
     screenings: dict[str, Screening] = {}
     screen: StageOutcome | None = None
-    transport = SyncTransport(client, notify=log) if client is not None else None
-    # Вторая ступень и сборка: пакетом — с кэшем на час, пакет считается дольше 5 минут (D15, D16)
-    judge_transport = BatchTransport(client, cache, album.uuid, notify=log) if batch and client else transport
+    # Вторая ступень и сборка: пакетом — с кэшем на час, пакет считается дольше 5 минут (D15, D16). Незабранные
+    # пакеты прерванного запуска забираются в любом режиме (FR-12.4).
+    batches = BatchTransport(client, cache, album.uuid, notify=log) if client is not None else None
+    transport = SyncTransport(client, notify=log, collector=batches) if client is not None else None
+    judge_transport = batches if batch else transport
     cache_ttl = "1h" if batch else "5m"
     if not opts.no_cloud and trip.query_themes and screen_scope:
         runner = ScreenRunner(screen_model, cfg.cloud.effort, preview)

@@ -703,3 +703,23 @@ def test_batch_compose_expired_falls_back(tmp_path, no_poll_sleep):
     report = result.themes[0].report_path.read_text(encoding="utf-8")
     assert ("Сборка не удалась — разложено по оценкам (BatchRequestFailed: запрос пакета не выполнен (expired))"
             in report)
+
+
+def test_sync_rerun_collects_interrupted_batch(tmp_path, no_poll_sleep):
+    # FR-12.4: пакетный запуск прерван по Ctrl+C, повтор без --batch ждёт пакет, а не платит второй раз
+    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
+    client = FakeClient(handler())
+
+    def interrupt(line: str) -> None:
+        if "готово" in line:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run(_trip(GIZA), _cfg(tmp_path), RunOptions(batch=True), album.library, cache, lambda: client, NOW,
+            log=interrupt)
+    logs: list[str] = []
+    run(_trip(GIZA), _cfg(tmp_path), RunOptions(), album.library, cache, lambda: client, NOW, log=logs.append)
+    judge = client.calls_for(JudgeOutput)
+    assert len(judge) == 1 and judge[0].get("_batch")  # группа оплачена один раз — в пакете
+    assert any(line.startswith("  незабранный пакет второй ступени msgbatch_001") for line in logs)
+    assert cache.album_spend("ALB") == pytest.approx(GROUP_USD + 0.5 * GROUP_USD + GROUP_USD)

@@ -1,5 +1,6 @@
 """Пакетный режим Message Batches (SPEC FR-12): отправка, ожидание, результаты, продолжение с незабранного пакета."""
 
+import json
 import time
 from datetime import datetime, timedelta
 
@@ -234,3 +235,31 @@ def test_handler_bug_is_not_a_theme_failure(tmp_path):
                                                   None), tag="A", meta={}, handle=broken)]
     with pytest.raises(KeyError):
         BatchTransport(FakeClient(_by_text({})), Cache(tmp_path / "c.sqlite"), ALBUM).run("judge", jobs)
+
+
+# --- пакеты по размеру (FR-12.2) -----------------------------------------------------------------
+
+def test_stage_split_into_batches_by_size(tmp_path, monkeypatch):
+    one = len(json.dumps({"custom_id": "j-A-01", "params": transport.request_kwargs(_jobs("A", 1, [])[0]
+                                                                                    .make_request())}).encode())
+    monkeypatch.setattr(transport, "BATCH_MAX_BYTES", 2 * one + 10)  # влезают два запроса, третий — в новый пакет
+    handled: list[str] = []
+    logs: list[str] = []
+    cache, client = Cache(tmp_path / "c.sqlite"), FakeClient(_by_text({}))
+    failures = BatchTransport(client, cache, ALBUM).run("judge", _jobs("A", 3, handled), log=logs.append)
+    assert failures == [] and sorted(handled) == ["A-1", "A-2", "A-3"]
+    assert client.created_batches == ["msgbatch_001", "msgbatch_002"]
+    assert _strip_time(logs) == ["  пакет второй ступени: собираю запросов 3",
+                                 "  пакет второй ступени msgbatch_001: отправлен, запросов 2",
+                                 "  пакет второй ступени msgbatch_002: отправлен, запросов 1",
+                                 "  пакет второй ступени: готово 1 из 3 запросов",  # 1 из 2 первого + 0 из 1
+                                 "  пакет второй ступени: готов"]
+    assert cache.pending_batches(ALBUM, "judge") == []
+
+
+def test_split_batches_progress_is_summed(tmp_path, monkeypatch):
+    monkeypatch.setattr(transport, "BATCH_MAX_BYTES", 1)  # каждый запрос — свой пакет
+    logs: list[str] = []
+    BatchTransport(FakeClient(_by_text({}), batch_polls=1), Cache(tmp_path / "c.sqlite"), ALBUM).run(
+        "judge", _jobs("A", 2, []), log=logs.append)
+    assert "  пакет второй ступени: готово 0 из 2 запросов" in _strip_time(logs)
