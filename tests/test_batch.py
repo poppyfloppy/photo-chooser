@@ -1,9 +1,29 @@
 """Пакетный режим Message Batches (SPEC FR-12): отправка, ожидание, результаты, продолжение с незабранного пакета."""
 
+import time
+from datetime import datetime, timedelta
+
 import pytest
 
-from fakes import EXPIRED, FakeClient, api_error, billing_error, credit_error, fake_response
+from conftest import make_asset
+from fakes import EXPIRED, FakeClient, api_error, billing_error, credit_error, fake_response, ids_in
+from photo_chooser import cache as cache_module
 from photo_chooser.cache import Cache
+from photo_chooser.config import AppConfig, CloudCfg, Theme
+from photo_chooser.judge.stages import (
+    ComposeCarousel,
+    ComposeOutput,
+    ComposeRunner,
+    ComposeSlide,
+    ComposeTask,
+    JudgeItem,
+    JudgeOutput,
+    JudgeRunner,
+    JudgeTask,
+    run_compose,
+    run_judge,
+)
+from photo_chooser.select import ShotFacts
 from photo_chooser.judge import transport
 from photo_chooser.judge.errors import InsufficientCredit
 from photo_chooser.judge.transport import BatchRequestFailed, BatchTransport, Job, ModelRequest
@@ -121,3 +141,74 @@ def test_empty_jobs_send_nothing(tmp_path):
     client = FakeClient(_by_text({}))
     assert BatchTransport(client, Cache(tmp_path / "c.sqlite"), ALBUM).run("judge", []) == []
     assert client.created_batches == []
+
+
+# --- продолжение с незабранного пакета (FR-12.4) ------------------------------------------------
+
+def _judge_reply(n, kw):
+    return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=7, interesting=False,
+                                                      reason="r", crop_feed="", crop_stories="")
+                                            for i in ids_in(kw["messages"][0]["content"])]))
+
+
+def _interrupt_on_wait(line: str) -> None:
+    if "готово" in line:
+        raise KeyboardInterrupt
+
+
+GIZA, NILE = Theme(name="Гиза", query="пирамиды"), Theme(name="Нил", query="река")
+
+
+def _assets(prefix: str, n: int):
+    t0 = make_asset().taken_at
+    return [make_asset(uuid=f"{prefix}{i:03d}", taken_at=t0 + timedelta(minutes=i)) for i in range(n)]
+
+
+def test_resume_collects_before_new_batch(tmp_path):
+    cache, client = Cache(tmp_path / "c.sqlite"), FakeClient(_judge_reply)
+    runner = JudgeRunner(HAIKU, "medium", lambda a: a.uuid.encode())
+    giza, nile = _assets("G", 30), _assets("N", 10)
+    with pytest.raises(KeyboardInterrupt):
+        run_judge(runner, BatchTransport(client, cache, ALBUM), cache, [JudgeTask(GIZA, giza, {})], CloudCfg(),
+                  ALBUM, log=_interrupt_on_wait)
+    logs: list[str] = []
+    outcomes = run_judge(runner, BatchTransport(client, cache, ALBUM), cache,
+                         [JudgeTask(GIZA, giza, {}), JudgeTask(NILE, nile, {})], CloudCfg(), ALBUM, log=logs.append)
+    assert logs[0] == f"  незабранный пакет второй ступени msgbatch_001 от {datetime.now():%Y-%m-%d %H:%M} — " \
+                      "забираю результат"
+    assert outcomes[GIZA.key()].from_cache == 30 and len(outcomes[NILE.key()].results) == 10
+    assert client.created_batches == ["msgbatch_001", "msgbatch_002"]
+    assert len([c for c in client.calls if c.get("_batch")]) == 2 + 1  # Гиза — 2 группы один раз, Нил — 1
+    group_usd = (20_000 * 0.10 + 2_000 * 0.50) / 1e6 * 0.5
+    assert cache.album_spend(ALBUM) == pytest.approx(3 * group_usd)
+
+
+def test_resume_skips_batches_older_than_29_days(tmp_path, monkeypatch):
+    cache, client = Cache(tmp_path / "c.sqlite"), FakeClient(_judge_reply)
+    old = time.time() - 30 * 24 * 3600
+    monkeypatch.setattr(cache_module.time, "time", lambda: old)
+    cache.add_batch("msgbatch_old", ALBUM, "judge", {"j-x-01": {}})
+    monkeypatch.undo()
+    logs: list[str] = []
+    BatchTransport(client, cache, ALBUM).resume("judge", lambda meta: None, log=logs.append)
+    assert logs == ["  пакет второй ступени msgbatch_old старше 29 дней — результаты в API удалены, пропускаю"]
+    assert client.retrieved == [] and client.results_read == []
+    assert cache.pending_batches(ALBUM, "judge") == []
+
+
+def test_resume_handles_compose_meta(tmp_path):
+    cache = Cache(tmp_path / "c.sqlite")
+    cands = _assets("C", 3)
+    facts = {a.uuid: ShotFacts(8, False, "r", "", "") for a in cands}
+    answer = ComposeOutput(carousels=[ComposeCarousel(title="Сфинкс", slides=[ComposeSlide(id="c01",
+                                                                                            alternatives=[])])],
+                           stories=[])
+    client = FakeClient(lambda n, kw: fake_response(answer))
+    runner = ComposeRunner(HAIKU, "medium", lambda a: a.uuid.encode())
+    with pytest.raises(KeyboardInterrupt):
+        run_compose(runner, BatchTransport(client, cache, ALBUM), cache, [ComposeTask(GIZA, cands, facts)],
+                    AppConfig(), ALBUM, log=_interrupt_on_wait)
+    outcomes = run_compose(runner, BatchTransport(client, cache, ALBUM), cache, [ComposeTask(GIZA, cands, facts)],
+                           AppConfig(), ALBUM)
+    assert outcomes[GIZA.key()].from_cache and client.created_batches == ["msgbatch_001"]
+    assert [s.asset.uuid for s in outcomes[GIZA.key()].posts.carousels[0].slides] == [cands[0].uuid]

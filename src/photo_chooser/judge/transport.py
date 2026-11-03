@@ -8,6 +8,7 @@ Message Batches на этап, ожидание и разбор результа
 
 import time
 from collections.abc import Callable
+from datetime import datetime
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
@@ -30,6 +31,7 @@ REQUEST_TIMEOUT_S = 300  # без ответа дольше — повтор (SP
 TRANSIENT_RETRIES = 4  # таймаут, сбой сети, ошибка сервера 5xx
 WAIT_NOTICE_S = 30  # строка ожидания, если ответа нет дольше
 POLL_S = 60  # опрос пакета (FR-12.3)
+BATCH_RESULTS_TTL_S = 29 * 24 * 3600  # результаты пакета API хранит 29 дней (FR-12.4)
 BATCH_LABELS = {"judge": "второй ступени", "compose": "сборки постов"}
 
 Stage = Literal["screen", "judge", "compose"]
@@ -245,6 +247,21 @@ class BatchTransport:
 
     def __init__(self, client, cache: Cache, album_uuid: str, notify: Callable[[str], None] = _quiet):
         self.client, self.cache, self.album_uuid, self.notify = client, cache, album_uuid, notify
+
+    def resume(self, stage: Stage, handler_for: Callable[[dict], Callable[[Any], None]],
+               log: Callable[[str], None] = _quiet) -> None:
+        """Сначала незабранные пакеты этого альбома и этапа (FR-12.4): ответы — в кэш, расход — в журнал, а
+        недостающее функция этапа отправит новым пакетом. Сбои старого пакета не возвращаются."""
+        label = BATCH_LABELS[stage]
+        for pending in self.cache.pending_batches(self.album_uuid, stage):
+            if time.time() - pending.created_at > BATCH_RESULTS_TTL_S:
+                self.cache.mark_batch_collected(pending.batch_id)
+                log(f"  пакет {label} {pending.batch_id} старше 29 дней — результаты в API удалены, пропускаю")
+                continue
+            log(f"  незабранный пакет {label} {pending.batch_id} от "
+                f"{datetime.fromtimestamp(pending.created_at):%Y-%m-%d %H:%M} — забираю результат")
+            self._collect(stage, pending.batch_id, {cid: handler_for(meta) for cid, meta in pending.metas.items()},
+                          {}, log)
 
     def run(self, stage: Stage, jobs: list[Job], log: Callable[[str], None] = _quiet) -> list[JobFailure]:
         if not jobs:
