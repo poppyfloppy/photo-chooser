@@ -115,3 +115,21 @@ def test_sync_resume_is_noop():
 
 def test_failure_carries_error():
     assert JobFailure("A", ValueError("x")).error.args == ("x",)
+
+
+def test_cached_prefix_first_job_alone(monkeypatch):
+    monkeypatch.setattr(transport, "MAX_PARALLEL_REQUESTS", 3)
+    first_done = threading.Event()
+    seen: list[bool] = []
+
+    def h(n, kw):
+        if n == 1:
+            threading.Event().wait(0.1)  # остальные успели бы стартовать, если бы шли параллельно
+        else:
+            seen.append(first_done.is_set())
+        return fake_response(text="ok")
+
+    jobs = [Job(make_request=lambda i=i: ModelRequest(f"j-{i}", HAIKU, "low", "s", [], None, cache_ttl="5m"),
+                tag="A", meta={}, handle=lambda resp, i=i: first_done.set() if i == 1 else None) for i in range(1, 6)]
+    SyncTransport(FakeClient(h)).run("judge", jobs)
+    assert seen == [True] * 4

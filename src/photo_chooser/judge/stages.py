@@ -232,6 +232,20 @@ class ScreenRunner:
         return _parse_group(response, uuids, ScreenOutput, convert)
 
 
+def _cache_marker(ttl: str) -> dict:
+    return {"type": "ephemeral"} if ttl == "5m" else {"type": "ephemeral", "ttl": ttl}
+
+
+def _mark_prefix(system: str, references: list[dict], ttl: str) -> tuple[str | list[dict], list[dict]]:
+    """Метка кэша на последнем блоке общего префикса (D15): последний скриншот-образец, без них — system.
+    Тема и превью кандидатов идут после метки и в кэш не попадают."""
+    images = [i for i, b in enumerate(references) if b["type"] == "image"]
+    if images:
+        references[images[-1]] = {**references[images[-1]], "cache_control": _cache_marker(ttl)}
+        return system, references
+    return [{"type": "text", "text": system, "cache_control": _cache_marker(ttl)}], references
+
+
 def reference_content(style: "StyleContext | None") -> list[dict]:
     """Скриншоты страницы перед кандидатами: у каждого подпись — грид ленты или stories (FR-11.4)."""
     content: list[dict] = []
@@ -249,8 +263,9 @@ def judge_prompt_version(style: "StyleContext | None") -> str:
 
 class JudgeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, cache_ttl: Literal["5m", "1h"] = "5m"):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.cache_ttl = cache_ttl
 
     @property
     def prompt_version(self) -> str:
@@ -261,15 +276,15 @@ class JudgeRunner:
         return self.style.extra_tokens if self.style else 0
 
     def request(self, theme: Theme, group: list[Asset], custom_id: str) -> ModelRequest:
-        system, content = JUDGE_SYSTEM_PROMPT, []
+        system = JUDGE_SYSTEM_PROMPT
         if self.style is not None:
             system += "\n\n" + STYLE_BLOCK.format(text=self.style.text)
             if self.style.references:  # оговорка о скриншотах — только когда они приложены
                 system += "\n" + STYLE_SCREENSHOTS_NOTE
-            content += reference_content(self.style)
+        marked, content = _mark_prefix(system, reference_content(self.style), self.cache_ttl)
         content += image_content(group, self.preview, with_orientation=True)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        return ModelRequest(custom_id, self.model, self.effort, system, content, JudgeOutput)
+        return ModelRequest(custom_id, self.model, self.effort, marked, content, JudgeOutput, self.cache_ttl)
 
     def parse(self, response, shots: list[tuple[str, str]]) -> GroupResult[Judgment]:
         """shots — (uuid, ориентация) кадров группы по порядку p01…"""
@@ -364,7 +379,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
                                                from_cache=len(cached))
         for n, g in enumerate(groups, 1):
             meta = {"theme_key": key, "model": runner.model, "prompt_version": version, "batch": transport.batch,
-                    "shots": [[a.uuid, orientation(a)] for a in g]}
+                    "cache_ttl": runner.cache_ttl, "shots": [[a.uuid, orientation(a)] for a in g]}
             jobs.append(Job(lambda theme=t.theme, g=g, cid=f"j-{key}-{n:02d}": runner.request(theme, g, cid), key,
                             meta, handler_for(meta, outcome)))
     for failure in transport.run("judge", jobs, log):
@@ -406,15 +421,16 @@ def _compose_style_system(system: str, style: "StyleContext | None") -> str:
 
 class ComposeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, cache_ttl: Literal["5m", "1h"] = "5m"):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.cache_ttl = cache_ttl
 
     def request(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
                 custom_id: str) -> ModelRequest:
         system = _compose_style_system(COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels,
                                                                     carousel_size=limits.carousel_size,
                                                                     stories=limits.stories), self.style)
-        content = reference_content(self.style)
+        system, content = _mark_prefix(system, reference_content(self.style), self.cache_ttl)
         for i, a in enumerate(cands, 1):
             f = facts[a.uuid]
             with objc.autorelease_pool():
@@ -425,7 +441,7 @@ class ComposeRunner:
                                                     f"«{reason}»"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        return ModelRequest(custom_id, self.model, self.effort, system, content, ComposeOutput)
+        return ModelRequest(custom_id, self.model, self.effort, system, content, ComposeOutput, self.cache_ttl)
 
     def parse(self, response) -> ComposeResult:
         usage = TokenUsage.of(response.usage)
@@ -515,7 +531,8 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
                              f"порога {HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.compose_candidates.")
         log(f"  «{t.theme.name}»: кандидатов {len(t.cands)}")
         meta = {"theme_key": key, "model": runner.model, "prompt_version": COMPOSE_PROMPT_VERSION,
-                "batch": transport.batch, "input_fp": fingerprint, "ids": {cid: a.uuid for cid, a in ids.items()}}
+                "batch": transport.batch, "cache_ttl": runner.cache_ttl, "input_fp": fingerprint,
+                "ids": {cid: a.uuid for cid, a in ids.items()}}
         sent[key] = ids
         jobs.append(Job(lambda t=t, cid=f"c-{key}": runner.request(t.theme, t.cands, t.facts, cfg.posts, cid), key,
                         meta, handler_for(meta, key)))

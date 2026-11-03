@@ -124,6 +124,12 @@ def fake_response(parsed=None, *, text=None, stop_reason="end_turn", input_token
     return SimpleNamespace(content=content, stop_reason=stop_reason, usage=usage)
 
 
+def system_text(kwargs: dict) -> str:
+    """system запроса строкой: с меткой кэша он приходит списком блоков (D15)."""
+    system = kwargs["system"]
+    return system if isinstance(system, str) else "".join(b["text"] for b in system)
+
+
 def output_model_of(kwargs: dict):
     """Какая ступень запрошена — по JSON-схеме в output_config.format."""
     from photo_chooser.judge.stages import ComposeOutput, JudgeOutput, ScreenOutput

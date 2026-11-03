@@ -18,6 +18,7 @@ from fakes import (
     rate_limit_error,
     screen_group,
     screen_run,
+    system_text,
 )
 from photo_chooser.cache import Cache
 from photo_chooser.config import CloudCfg, Theme, themes_key
@@ -288,7 +289,7 @@ def test_request_shape():
     assert not {"thinking", "betas", "fallbacks", "output_format"} & set(call)
     judge_client = FakeClient(judge_handler())
     judge_group(judge_client, JudgeRunner(HAIKU, "medium", _preview), THEMES[0], _assets(1))
-    assert judge_client.calls[0]["system"] == JUDGE_SYSTEM_PROMPT
+    assert system_text(judge_client.calls[0]) == JUDGE_SYSTEM_PROMPT
     assert output_model_of(judge_client.calls[0]) is JudgeOutput
 
 
@@ -330,10 +331,15 @@ def test_refusal_with_text_is_refused():
 
 
 def test_interrupt_keeps_completed_groups(tmp_path, monkeypatch):
-    # Ctrl+C в главном потоке, пока группы в работе: оплаченные ответы всё равно записываются
+    # Ctrl+C в главном потоке, пока группы в работе: оплаченные ответы всё равно записываются.
+    # Первая группа идёт одна (запись кэша, D15) — прерывание приходит, когда в работе остальные.
     real_wait = transport.wait
+    waits = []
 
     def interrupted_wait(fs, timeout=None, return_when=None):
+        waits.append(1)
+        if len(waits) == 1:
+            return real_wait(fs, timeout=timeout, return_when=return_when)
         real_wait(fs)  # все запущенные группы завершились
         raise KeyboardInterrupt
 
@@ -428,7 +434,7 @@ def test_judge_without_style_unchanged():
     runner = JudgeRunner(HAIKU, "medium", _preview)
     judge_group(client, runner, THEMES[0], _assets(1))
     assert runner.prompt_version == JUDGE_PROMPT_VERSION and runner.extra_input_tokens == 0
-    assert client.calls[0]["system"] == JUDGE_SYSTEM_PROMPT
+    assert system_text(client.calls[0]) == JUDGE_SYSTEM_PROMPT
     assert client.calls[0]["messages"][0]["content"][0]["text"] == "id: p01 (horizontal)"
 
 
@@ -452,10 +458,10 @@ def test_judge_style_without_screenshots_omits_screenshot_note():
     client = FakeClient(judge_handler())
     judge_group(client, JudgeRunner(HAIKU, "medium", _preview, style=_style(refs=())), THEMES[0], _assets(2))
     call = client.calls[0]
-    assert "Тёплый свет, минимализм." in call["system"]
+    assert "Тёплый свет, минимализм." in system_text(call)
     from photo_chooser.judge.prompts import STYLE_SCREENSHOTS_NOTE
 
-    assert STYLE_SCREENSHOTS_NOTE not in call["system"] and "start of the message" not in call["system"]
+    assert STYLE_SCREENSHOTS_NOTE not in system_text(call) and "start of the message" not in system_text(call)
     assert call["messages"][0]["content"][0]["text"] == "id: p01 (horizontal)"
 
 
@@ -620,3 +626,39 @@ def test_judge_spend_includes_cache_tokens(tmp_path):
     price = CloudCfg().pricing[HAIKU]
     expected = usage_usd(TokenUsage(input=20_000, output=2_000, cache_write=4000, cache_read=40000), price)
     assert cache.album_spend("album-1") == pytest.approx(expected)
+
+
+def _marked(blocks: list[dict]) -> list[int]:
+    return [i for i, b in enumerate(blocks) if "cache_control" in b]
+
+
+def test_judge_request_marks_last_reference():
+    req = JudgeRunner(HAIKU, "medium", _preview, style=_style()).request(THEMES[0], _assets(2), "j-x-01")
+    images = [i for i, b in enumerate(req.content) if b["type"] == "image"]
+    assert _marked(req.content) == [images[1]]  # последний скриншот-образец; превью кандидатов — после метки
+    assert req.content[images[1]]["cache_control"] == {"type": "ephemeral"}
+    assert isinstance(req.system, str) and req.cache_ttl == "5m"
+
+
+def test_judge_request_without_references_marks_system():
+    req = JudgeRunner(HAIKU, "medium", _preview).request(THEMES[0], _assets(2), "j-x-01")
+    assert req.system == [{"type": "text", "text": JUDGE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+    assert _marked(req.content) == []
+
+
+def test_judge_request_1h_ttl():
+    req = JudgeRunner(HAIKU, "medium", _preview, style=_style(), cache_ttl="1h").request(THEMES[0], _assets(1), "j")
+    [i] = _marked(req.content)
+    assert req.content[i]["cache_control"] == {"type": "ephemeral", "ttl": "1h"} and req.cache_ttl == "1h"
+
+
+def test_screen_request_has_no_cache_control():
+    req = ScreenRunner(HAIKU, "medium", _preview).request("Egypt.26", THEMES, _assets(2), "s-001")
+    assert _marked(req.content) == [] and isinstance(req.system, str) and req.cache_ttl is None
+
+
+def test_cache_does_not_change_cache_keys():
+    from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION
+    from photo_chooser.judge.stages import judge_prompt_version
+
+    assert judge_prompt_version(None) == "judge-7" and COMPOSE_PROMPT_VERSION == "compose-5"
