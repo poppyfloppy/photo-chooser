@@ -11,7 +11,7 @@ from photo_chooser import images
 from photo_chooser.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, StyleCfg
 from photo_chooser.judge.cost import PROMPT_OVERHEAD_TOKENS, image_tokens, price_for, usage_usd
 from photo_chooser.judge.prompts import STYLE_SYSTEM_PROMPT
-from photo_chooser.judge.stages import call_model
+from photo_chooser.judge.transport import ModelRequest, call_model
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosLibrary, resolve_album
 from photo_chooser.models import AlbumRef, Asset
 
@@ -107,7 +107,7 @@ def build_profile(client, model: str, effort: str, samples: list[Sample]) -> Pro
     for sample in samples:
         content += [{"type": "text", "text": sample.label}, _image_block(sample.image)]
     content.append({"type": "text", "text": "Describe the style of this Instagram page."})
-    response = call_model(client, model, effort, STYLE_SYSTEM_PROMPT, content, None)
+    response = call_model(client, ModelRequest("style", model, effort, STYLE_SYSTEM_PROMPT, content, None))
     text = "".join(block.text for block in response.content if block.type == "text").strip()
     if response.stop_reason == "refusal" or not text:
         raise RuntimeError(f"Модель не написала профиль стиля (stop_reason: {response.stop_reason})")

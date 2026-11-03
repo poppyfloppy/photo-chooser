@@ -10,7 +10,7 @@ from imaging import save_jpeg, varied_scene
 from photo_chooser import cli
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig
-from photo_chooser.judge import stages
+from photo_chooser.judge import transport
 from photo_chooser.library.base import PhotosAccessError
 from photo_chooser.models import AlbumRef
 
@@ -106,15 +106,15 @@ def test_missing_api_key_exit_2_with_hint(env, monkeypatch):
 
 
 def test_make_client_uses_keychain_key(monkeypatch):
-    monkeypatch.setattr(stages.keychain, "read_api_key", lambda: "sk-test")
+    monkeypatch.setattr(transport.keychain, "read_api_key", lambda: "sk-test")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert stages.make_client().api_key == "sk-test"
+    assert transport.make_client().api_key == "sk-test"
 
 
 def test_make_client_falls_back_to_env(monkeypatch):
-    monkeypatch.setattr(stages.keychain, "read_api_key", lambda: None)
+    monkeypatch.setattr(transport.keychain, "read_api_key", lambda: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env")
-    assert stages.make_client().api_key == "sk-env"
+    assert transport.make_client().api_key == "sk-env"
 
 
 @pytest.mark.parametrize(("code", "line", "exit_code"), [

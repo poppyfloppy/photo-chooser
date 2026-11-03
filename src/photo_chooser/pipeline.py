@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 import objc
 
 from photo_chooser import images
@@ -20,16 +19,18 @@ from photo_chooser.judge.cost import check_budget, estimate_run_usd, price_for
 from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import (
     ComposeRunner,
+    ComposeTask,
     JudgeRunner,
+    JudgeTask,
     ScreenRunner,
     StageOutcome,
-    check_credentials,
     compose_input_fingerprint,
     judge_prompt_version,
     run_compose,
     run_judge,
     run_screen,
 )
+from photo_chooser.judge.transport import SyncTransport, check_credentials
 from photo_chooser.library.base import PhotosLibrary
 from photo_chooser.models import AlbumRef, Asset, LocalFeatures, Screening
 from photo_chooser.report import ReportHeader, ThemeStats, write_report
@@ -88,6 +89,24 @@ class RunResult:
     estimate_usd: float
     theme_counts: dict[str, int] = field(default_factory=dict)  # снимков темы после отсева и интервала
     album_spend_usd: float = 0.0
+
+
+@dataclass
+class _ThemeWork:
+    """Тема на пути через этапы запуска: кандидаты, оценки, посты, предупреждения отчёта и строки выгрузки."""
+
+    theme: Theme
+    assets: list[Asset]  # снимки темы после отсева и интервала
+    warnings: list[str]
+    matched: int | None = None
+    cands: list[Asset] = field(default_factory=list)
+    judge: StageOutcome | None = None
+    facts: dict = field(default_factory=dict)
+    comp: list[Asset] = field(default_factory=list)  # кандидаты сборки
+    posts: Posts = field(default_factory=lambda: Posts([], []))
+    compose_usd: float = 0.0
+    error: str | None = None
+    notes: list[str] = field(default_factory=list)  # строки хода, которые выводятся при выгрузке темы
 
 
 def _no_log(message: str) -> None:
@@ -226,98 +245,103 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
 
     screenings: dict[str, Screening] = {}
     screen: StageOutcome | None = None
+    transport = SyncTransport(client, notify=log) if client is not None else None
     if not opts.no_cloud and trip.query_themes and screen_scope:
-        runner = ScreenRunner(client, screen_model, cfg.cloud.effort, preview, notify=log)
+        runner = ScreenRunner(screen_model, cfg.cloud.effort, preview)
         # Ошибка здесь останавливает запуск: без первой ступени темы с query не обработать.
-        screen = run_screen(runner, cache, album.title, album.uuid, trip.query_themes, screen_scope, cfg.cloud,
-                            log=log)
+        screen = run_screen(runner, transport, cache, album.title, album.uuid, trip.query_themes, screen_scope,
+                            cfg.cloud, log=log)
         screenings = screen.results
 
+    th = cfg.thresholds
+    works = [_ThemeWork(t, theme_assets[t.key()], list(style_warnings)) for t in trip.themes]
+    for w in works:
+        t = w.theme
+        # «признано подходящими» — только для тем с query и только когда первая ступень работала
+        w.matched = None if opts.no_cloud or t.interval_only else sum(
+            1 for a in w.assets if a.uuid in screenings and screenings[a.uuid].relevance.get(t.screen_key(), 0)
+            >= th.min_theme_relevance)
+        if opts.no_cloud:
+            if t.query:
+                w.warnings.append(NO_CLOUD_QUERY_WARNING.format(scope="интервала" if t.has_interval else "альбома"))
+            w.cands = w.assets
+            w.posts = local_posts(w.cands, state.quality, state.features, cfg.posts)
+            w.facts = local_facts(w.cands, state.quality, state.features)
+        else:
+            w.cands = screen_candidates(w.assets, screenings, state.quality, t, th.min_theme_relevance,
+                                        cfg.cloud.candidates_per_theme)
+
+    # Вторая ступень всех тем, затем сборка всех тем (FR-3, «Порядок этапов»)
+    cloud = [w for w in works if not opts.no_cloud and w.cands]
+    if cloud:
+        judge_runner = JudgeRunner(judge_model, cfg.cloud.effort, preview, style=style)
+        tasks = [JudgeTask(w.theme, w.cands, {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0)
+                                              / 10 for a in w.cands}) for w in cloud]
+        judged = run_judge(judge_runner, transport, cache, tasks, cfg.cloud, album.uuid, log=log)
+        to_compose: list[_ThemeWork] = []
+        for w in cloud:
+            w.judge = judged[w.theme.key()]
+            if w.judge.error is not None:
+                w.error = f"{type(w.judge.error).__name__}: {w.judge.error}"
+                w.warnings.append(f"Тема не обработана: ошибка Claude API ({w.error}). Повторный запуск "
+                                  "продолжит с уже оплаченных оценок.")
+                w.notes.append(f"тема не обработана: ошибка Claude API ({w.error})")
+                continue
+            w.facts = shot_facts(w.judge.results)
+            w.comp = compose_candidates(w.cands, w.judge.results, state.quality, th, w.theme.interval_only,
+                                        *compose_window(cfg.cloud, cfg.posts))
+            if w.comp:
+                to_compose.append(w)
+        if to_compose:
+            compose_runner = ComposeRunner(judge_model, cfg.cloud.effort, preview, style=style)
+            composed = run_compose(compose_runner, transport, cache,
+                                   [ComposeTask(w.theme, w.comp, w.facts) for w in to_compose], cfg, album.uuid, log)
+            for w in to_compose:
+                c = composed[w.theme.key()]
+                w.posts, w.compose_usd = c.posts, c.usd
+                if w.posts is None:
+                    failure = "модель отказалась" if c.refused else c.note
+                    w.warnings.append(f"Сборка не удалась — разложено по оценкам ({failure})")
+                    w.notes.append(f"сборка не удалась — разложено по оценкам ({failure})")
+                    w.posts = fallback_posts(w.cands, w.judge.results, state.quality, th, cfg.posts,
+                                             w.theme.interval_only)
+
+    log("Выгрузка")
     run_dir = new_run_dir(cfg.output_dir, album.title, now)
-    judge_runner = compose_runner = None
     outcomes: list[ThemeOutcome] = []
     no_preview = set(state.no_preview)
     skipped = [(a.filename, "нет превью") for a in state.assets if a.uuid in no_preview]
     with tempfile.TemporaryDirectory(prefix="photo-chooser-") as tmp:
-        for t in trip.themes:
-            log(f"Тема «{t.name}»")
+        for w in works:
+            t, judge = w.theme, w.judge
             theme_dir = _theme_dir(run_dir, t)
-            assets = theme_assets[t.key()]
-            warnings: list[str] = list(style_warnings)
-            judge: StageOutcome | None = None
-            error = None
-            th = cfg.thresholds
-            # «признано подходящими» — только для тем с query и только когда первая ступень работала
-            matched = None if opts.no_cloud or t.interval_only else sum(
-                1 for a in assets if a.uuid in screenings and screenings[a.uuid].relevance.get(t.screen_key(), 0)
-                >= th.min_theme_relevance)
-            facts: dict = {}
-            posts = Posts([], [])
-            compose_usd, sent_to_compose = 0.0, 0
-            if opts.no_cloud:
-                if t.query:
-                    warnings.append(NO_CLOUD_QUERY_WARNING.format(scope="интервала" if t.has_interval else "альбома"))
-                cands = assets
-                posts = local_posts(cands, state.quality, state.features, cfg.posts)
-                facts = local_facts(cands, state.quality, state.features)
-            else:
-                cands = screen_candidates(assets, screenings, state.quality, t, th.min_theme_relevance,
-                                          cfg.cloud.candidates_per_theme)
-                if cands:
-                    try:
-                        if judge_runner is None:
-                            judge_runner = JudgeRunner(client, judge_model, cfg.cloud.effort, preview, style=style,
-                                                       notify=log)
-                            compose_runner = ComposeRunner(client, judge_model, cfg.cloud.effort, preview,
-                                                           style=style, notify=log)
-                        order = {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0) / 10
-                                 for a in cands}
-                        judge = run_judge(judge_runner, cache, t, cands, order, cfg.cloud, album.uuid, log=log)
-                        facts = shot_facts(judge.results)
-                        comp = compose_candidates(cands, judge.results, state.quality, th, t.interval_only,
-                                                  *compose_window(cfg.cloud, cfg.posts))
-                        sent_to_compose = len(comp)
-                        if comp:
-                            posts, compose_usd, failure = _compose(compose_runner, cache, t, comp, facts, cfg,
-                                                                   album.uuid, log)
-                            if posts is None:
-                                warnings.append(f"Сборка не удалась — разложено по оценкам ({failure})")
-                                log(f"  сборка не удалась — разложено по оценкам ({failure})")
-                                posts = fallback_posts(cands, judge.results, state.quality, th, cfg.posts,
-                                                       t.interval_only)
-                    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
-                        raise  # ключ не подходит — другие темы упадут так же
-                    except anthropic.APIError as e:
-                        error = f"{type(e).__name__}: {e}"
-                        warnings.append(f"Тема не обработана: ошибка Claude API ({error}). Повторный запуск "
-                                        "продолжит с уже оплаченных оценок.")
-                        log(f"  тема не обработана: ошибка Claude API ({error})")
+            for note in w.notes:
+                log(f"  «{t.name}»: {note}")
             if judge and judge.refused_groups:
-                warnings.append(f"Модель отказалась оценивать групп: {judge.refused_groups} — эти кадры не оценены")
-
-            if error is None:
-                log(f"  посты: {_posts_line(posts)}")
-            exported = export_posts(library, posts, theme_dir, Path(tmp), cfg)
+                w.warnings.append(f"Модель отказалась оценивать групп: {judge.refused_groups} — эти кадры не оценены")
+            if w.error is None:
+                log(f"  «{t.name}»: {_posts_line(w.posts)}")
+            exported = export_posts(library, w.posts, theme_dir, Path(tmp), cfg)
             header = ReportHeader(
                 screen_model=None if opts.no_cloud or screen is None else screen_model,
                 model=None if opts.no_cloud else judge_model,
                 effort=None if opts.no_cloud else cfg.cloud.effort,
                 prompt_versions=(None if opts.no_cloud else
                                  f"{SCREEN_PROMPT_VERSION}, {judge_prompt_version(style)}, {COMPOSE_PROMPT_VERSION}"),
-                run_at=now, warnings=warnings, album=album.title,
+                run_at=now, warnings=w.warnings, album=album.title,
                 style=None if style is None else _style_line(style))
             stats = ThemeStats(
                 read=len(state.assets), no_preview=len(state.no_preview), junk=len(state.junk),
-                duplicates_collapsed=state.duplicates_collapsed, in_interval=len(assets),
-                sent_to_screen=len(screen_scope) if screen else 0, matched=matched,
-                sent_to_judge=len(cands) if not opts.no_cloud else 0,
+                duplicates_collapsed=state.duplicates_collapsed, in_interval=len(w.assets),
+                sent_to_screen=len(screen_scope) if screen else 0, matched=w.matched,
+                sent_to_judge=len(w.cands) if not opts.no_cloud else 0,
                 from_cache=judge.from_cache if judge else 0, unjudged=len(judge.unjudged) if judge else 0,
                 usd_screen=screen.usd if screen else 0.0, usd_judge=judge.usd if judge else 0.0,
                 usd_album_total=cache.album_spend(album.uuid), skipped=skipped,
-                sent_to_compose=sent_to_compose, usd_compose=compose_usd)
+                sent_to_compose=len(w.comp), usd_compose=w.compose_usd)
             report_path = theme_dir / "report.md"
-            write_report(report_path, t, header, exported, facts, stats)
-            outcomes.append(ThemeOutcome(t, report_path, exported, error))
+            write_report(report_path, t, header, exported, w.facts, stats)
+            outcomes.append(ThemeOutcome(t, report_path, exported, w.error))
     return RunResult(run_dir=run_dir, themes=outcomes, estimate_usd=estimate, theme_counts=counts,
                      album_spend_usd=cache.album_spend(album.uuid))
 
@@ -325,19 +349,6 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
 def _posts_line(posts: Posts) -> str:
     sizes = " + ".join(str(len(c.slides)) for c in posts.carousels)
     return f"каруселей {len(posts.carousels)}" + (f" ({sizes})" if sizes else "") + f", stories {len(posts.stories)}"
-
-
-def _compose(runner: ComposeRunner, cache: Cache, theme: Theme, comp: list[Asset], facts: dict, cfg: AppConfig,
-             album_uuid: str, log: Callable[[str], None] = _no_log) -> tuple[Posts | None, float, str]:
-    """Сборка постов темы; None — не удалась (FR-4.4): отказ, неразборчивый ответ или ошибка API после повторов."""
-    try:
-        outcome = run_compose(runner, cache, theme, comp, facts, cfg, album_uuid, log)
-    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
-        raise
-    except anthropic.APIError as e:
-        return None, 0.0, f"{type(e).__name__}: {e}"
-    failure = "" if outcome.posts is not None else ("модель отказалась" if outcome.refused else outcome.note)
-    return outcome.posts, outcome.usd, failure
 
 
 def _style_line(style: StyleContext) -> str:
