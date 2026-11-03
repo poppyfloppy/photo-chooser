@@ -5,7 +5,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import make_asset
-from fakes import FakeClient, FakeLibrary
+from fakes import FakeClient, FakeLibrary, credit_error
 from imaging import save_jpeg, varied_scene
 from photo_chooser import cli
 from photo_chooser.cache import Cache
@@ -68,6 +68,14 @@ def test_budget_exceeded_exit_3(env):
     result = runner.invoke(cli.app, ["run", "--album", "Египет 2026", "--theme", "Гиза", "--query", "пирамиды"])
     assert result.exit_code == 3
     assert "--max-cost" in result.output
+
+
+def test_credit_error_exit_6(env, monkeypatch):
+    monkeypatch.setattr(cli, "make_client", lambda: FakeClient(lambda n, kw: credit_error()))
+    result = runner.invoke(cli.app, ["run", "--album", "Египет 2026", "--theme", "Гиза", "--query", "пирамиды"])
+    assert result.exit_code == 6
+    assert ("На балансе Claude API не хватает средств — пополните баланс в Claude Console. Оплаченное сохранено "
+            "в кэше, повторный запуск продолжит") in result.output
 
 
 def test_unknown_model_exit_2(env):

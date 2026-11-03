@@ -29,6 +29,7 @@ from photo_chooser.judge.cost import (
     price_for,
     usage_usd,
 )
+from photo_chooser.judge.errors import InsufficientCredit, is_billing_error
 from photo_chooser.judge.prompts import (
     COMPOSE_PROMPT_VERSION,
     COMPOSE_SCREENSHOTS_NOTE,
@@ -190,6 +191,8 @@ def call_model(client, model: str, effort: str, system: str, content: list[dict]
             notify(f"  лимит API, пауза {RATE_LIMIT_SLEEP_S} с (попытка {attempt}/{RATE_LIMIT_ATTEMPTS})")
             time.sleep(RATE_LIMIT_SLEEP_S)
         except anthropic.APIError as e:
+            if is_billing_error(e):
+                raise InsufficientCredit() from e
             why = _transient(e)
             if why is None or retries == TRANSIENT_RETRIES:
                 raise

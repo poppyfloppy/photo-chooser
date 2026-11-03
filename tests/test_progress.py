@@ -10,7 +10,9 @@ from conftest import make_asset
 from fakes import (
     FakeClient,
     api_error,
+    billing_error,
     connection_error,
+    credit_error,
     fake_response,
     ids_in,
     rate_limit_error,
@@ -20,6 +22,7 @@ from fakes import (
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, CloudCfg, Theme
 from photo_chooser.judge import stages
+from photo_chooser.judge.errors import InsufficientCredit
 from photo_chooser.judge.stages import (
     ComposeCarousel,
     ComposeOutput,
@@ -106,6 +109,20 @@ def test_client_errors_are_not_retried(sleeps):
     with pytest.raises(anthropic.BadRequestError):
         call_model(client, HAIKU, "low", "system", TEXT, None)
     assert len(client.calls) == 1 and sleeps == []
+
+
+@pytest.mark.parametrize("error", [credit_error, billing_error])
+def test_billing_errors_raise_insufficient_credit_without_retry(sleeps, error):
+    client = FakeClient(lambda n, kw: error())
+    with pytest.raises(InsufficientCredit):
+        call_model(client, HAIKU, "low", "system", TEXT, None)
+    assert len(client.calls) == 1 and sleeps == []
+
+
+def test_other_bad_request_is_not_billing(sleeps):
+    with pytest.raises(anthropic.BadRequestError) as e:
+        call_model(FakeClient(lambda n, kw: api_error()), HAIKU, "low", "system", TEXT, None)
+    assert not isinstance(e.value, InsufficientCredit)
 
 
 def test_rate_limit_pause_is_announced(sleeps):
