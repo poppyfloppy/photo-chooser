@@ -586,28 +586,48 @@ def _logged_run(album, trip, cfg, cache, client):
 
 
 def test_run_logs_each_stage(tmp_path):
-    # FR-7.2: по выводу видно, на каком этапе запуск и что он не завис
+    # FR-7.2: по выводу видно, на каком этапе запуск и что он не завис; этапы идут по всем темам (FR-3)
     album = Album(tmp_path, n=5)
     _, logs = _logged_run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), FakeClient(handler()))
-    expected = ["Первая ступень (claude-haiku-5-5): 5 снимков, из кэша 0, групп 1",
-                "  первая ступень: группа 1/1 (0:00)",
-                "Тема «Гиза»",
-                "Вторая ступень (claude-haiku-5-5): тем 1",
-                "  «Гиза»: кандидатов 5, из кэша 0, групп 1",
-                "  вторая ступень: группа 1/1 (0:00)",
-                "Сборка постов (claude-haiku-5-5): тем 1",
-                "  «Гиза»: кандидатов 5",
-                "  сборка постов: тема 1/1 (0:00)",
-                "  посты: каруселей 1 (3), stories 1"]
-    assert [line for line in logs if line in expected] == expected
+    assert logs == ["Альбом «Egypt.26»: 5 фото",
+                    "Превью и локальные признаки: 5/5",
+                    "Первая ступень (claude-haiku-5-5): 5 снимков, из кэша 0, групп 1",
+                    "  первая ступень: группа 1/1 (0:00)",
+                    "Вторая ступень (claude-haiku-5-5): тем 1",
+                    "  «Гиза»: кандидатов 5, из кэша 0, групп 1",
+                    "  вторая ступень: группа 1/1 (0:00)",
+                    "Сборка постов (claude-haiku-5-5): тем 1",
+                    "  «Гиза»: кандидатов 5",
+                    "  сборка постов: тема 1/1 (0:00)",
+                    "Выгрузка",
+                    "  «Гиза»: каруселей 1 (3), stories 1"]
+
+
+def test_judge_of_all_themes_before_any_compose(tmp_path):
+    album = Album(tmp_path, n=5)
+    client = FakeClient(handler())
+    _run(album, _trip(GIZA, NILE), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
+    kinds = [output_model_of(c) for c in client.calls]
+    last_judge = max(i for i, k in enumerate(kinds) if k is JudgeOutput)
+    first_compose = min(i for i, k in enumerate(kinds) if k is ComposeOutput)
+    assert last_judge < first_compose
+    assert kinds.count(ComposeOutput) == 2
 
 
 def test_run_logs_compose_fallback(tmp_path):
     album = Album(tmp_path, n=5)
     client = FakeClient(handler(compose=lambda n, kw: api_error()))
     _, logs = _logged_run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
-    assert any(line.startswith("  сборка не удалась — разложено по оценкам (BadRequestError") for line in logs)
-    assert logs[-1].startswith("  посты: каруселей 1 (3)")
+    assert any(line.startswith("  «Гиза»: сборка не удалась — разложено по оценкам (BadRequestError") for line in logs)
+    assert logs[-1].startswith("  «Гиза»: каруселей 1 (3)")
+
+
+def test_run_logs_theme_failure(tmp_path):
+    album = Album(tmp_path, n=5)
+    _, logs = _logged_run(album, _trip(GIZA, NILE), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"),
+                          FakeClient(handler(fail_theme="Гиза")))
+    assert any(line.startswith("  «Гиза»: тема не обработана: ошибка Claude API (BadRequestError") for line in logs)
+    assert logs[-1].startswith("  «Нил»: каруселей 1 (3)")
 
 
 def test_dry_run_estimate_includes_interesting_window(tmp_path):
