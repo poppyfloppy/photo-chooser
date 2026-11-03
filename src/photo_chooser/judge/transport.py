@@ -8,7 +8,7 @@ SyncTransport — параллельные запросы с повторами 
 import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 import anthropic
@@ -68,6 +68,7 @@ class ModelRequest:
     system: str | list[dict]
     content: list[dict]
     output_model: type[BaseModel] | None  # None — свободный текст (профиль стиля)
+    cache_ttl: Literal["5m", "1h"] | None = None  # у запроса есть метка кэша мета-блока (D15)
 
 
 def request_kwargs(req: ModelRequest) -> dict:
@@ -145,7 +146,8 @@ class Transport(Protocol):
 class SyncTransport:
     """До MAX_PARALLEL_REQUESTS запросов сразу. Ошибка задания выключает оставшиеся задания его тега, остальные
     идут; ошибка ключа, доступа или баланса останавливает отправку, начатые задания доделываются, ошибка
-    поднимается. Каждое готовое задание и ожидание ответа дольше WAIT_NOTICE_S пишутся в log (FR-7.2)."""
+    поднимается. Каждое готовое задание и ожидание ответа дольше WAIT_NOTICE_S пишутся в log (FR-7.2).
+    Если у запросов есть метка кэша, первый идёт один: запись кэша читается только после его ответа (§9)."""
 
     batch = False
 
@@ -160,6 +162,11 @@ class SyncTransport:
 
     def run(self, stage: Stage, jobs: list[Job], log: Callable[[str], None] = _quiet) -> list[JobFailure]:
         label, unit, units = _SYNC_LABELS[stage]
+        gate = False  # первый запрос пишет кэш мета-блока — остальные ждут его ответа
+        if jobs:
+            first = jobs[0].make_request()
+            gate = first.cache_ttl is not None
+            jobs = [replace(jobs[0], make_request=lambda: first), *jobs[1:]]
         pending = iter(jobs)
         failures: list[JobFailure] = []
         failed_tags: set[str] = set()
@@ -169,7 +176,7 @@ class SyncTransport:
             running: dict[Future, Job] = {}
 
             def fill():
-                while fatal is None and len(running) < MAX_PARALLEL_REQUESTS:
+                while fatal is None and len(running) < (1 if gate else MAX_PARALLEL_REQUESTS):
                     job = next(pending, None)
                     if job is None:
                         return
@@ -199,6 +206,7 @@ class SyncTransport:
                             finished += 1
                             log(f"  {label}: {unit} {finished}/{len(jobs)} ({_mmss(time.monotonic() - start)})")
                     last = time.monotonic()
+                    gate = False
                     fill()
             except KeyboardInterrupt:
                 log("  Ctrl+C: дожидаюсь ответов на уже отправленные запросы — они оплачены и попадут в кэш")

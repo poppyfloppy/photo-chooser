@@ -112,14 +112,22 @@ def auth_error() -> anthropic.AuthenticationError:
     return anthropic.AuthenticationError("invalid x-api-key", response=httpx2.Response(401, request=request), body=None)
 
 
-def fake_response(parsed=None, *, text=None, stop_reason="end_turn", input_tokens=20_000, output_tokens=2_000):
+def fake_response(parsed=None, *, text=None, stop_reason="end_turn", input_tokens=20_000, output_tokens=2_000,
+                  cache_write=0, cache_read=0):
     """Ответ messages.create: блок thinking (как у моделей с adaptive thinking) и текст с JSON по схеме."""
     body = text if text is not None else (parsed.model_dump_json() if parsed is not None else None)
     content = [SimpleNamespace(type="thinking", thinking="")]
     if body is not None:
         content.append(SimpleNamespace(type="text", text=body))
-    return SimpleNamespace(content=content, stop_reason=stop_reason,
-                           usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens))
+    usage = SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens,
+                            cache_creation_input_tokens=cache_write, cache_read_input_tokens=cache_read)
+    return SimpleNamespace(content=content, stop_reason=stop_reason, usage=usage)
+
+
+def system_text(kwargs: dict) -> str:
+    """system запроса строкой: с меткой кэша он приходит списком блоков (D15)."""
+    system = kwargs["system"]
+    return system if isinstance(system, str) else "".join(b["text"] for b in system)
 
 
 def output_model_of(kwargs: dict):

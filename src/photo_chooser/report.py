@@ -41,6 +41,8 @@ class ThemeStats:
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (файл, причина) — пропущенные до отбора
     sent_to_compose: int = 0  # кандидатов в запросе сборки постов (FR-4.1)
     usd_compose: float = 0.0
+    cache_write_tokens: int = 0  # кэш мета-блока второй ступени и сборки темы (§9)
+    cache_read_tokens: int = 0
 
 
 def _cell(text: str) -> str:
@@ -148,8 +150,11 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
               f"- Посты: {summary}",
               f"- Стоимость: первая ступень ${stats.usd_screen:.4f} (общая на запуск), "
               f"вторая ступень ${stats.usd_judge:.4f}, сборка ${stats.usd_compose:.4f} (по теме); "
-              f"накоплено по альбому ${stats.usd_album_total:.2f}",
-              ""]
+              f"накоплено по альбому ${stats.usd_album_total:.2f}"]
+    if header.model is not None:
+        lines.append(f"- Кэш мета-блока (вторая ступень и сборка): записано {stats.cache_write_tokens / 1000:.1f} тыс., "
+                     f"прочитано {stats.cache_read_tokens / 1000:.1f} тыс. токенов")
+    lines.append("")
     skipped = [(a.filename, reason) for a, reason in posts.failed] + list(stats.skipped)
     if skipped:
         lines += ["## Пропущенные снимки", ""]

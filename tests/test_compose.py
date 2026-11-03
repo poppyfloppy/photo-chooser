@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from conftest import make_asset
-from fakes import FakeClient, compose_once, compose_one, fake_response, output_model_of
+from fakes import FakeClient, compose_once, compose_one, fake_response, output_model_of, system_text
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme
 from photo_chooser.judge.prompts import (
@@ -61,7 +61,7 @@ def test_compose_request_shape():
     cands = _cands()
     compose_once(client, ComposeRunner(HAIKU, "medium", _preview), THEME, cands, _facts(cands), AppConfig().posts)
     call = client.calls[0]
-    assert call["system"] == COMPOSE_SYSTEM_PROMPT.format(carousels=1, carousel_size=5, stories=9)
+    assert system_text(call) == COMPOSE_SYSTEM_PROMPT.format(carousels=1, carousel_size=5, stories=9)
     assert output_model_of(call) is ComposeOutput and call["_beta"] is False
     content = call["messages"][0]["content"]
     labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
@@ -265,3 +265,15 @@ def test_compose_prompt_storyline_by_set_and_coherence():
     for phrase in ("taken together", "not by the highest single scores", "depends on the place", "golden hour",
                    "night lights of a big city", "in one key", "one interior among outdoor views, goes to stories"):
         assert phrase in COMPOSE_SYSTEM_PROMPT
+
+
+def test_compose_request_marks_prefix():
+    cands = _cands(3)
+    styled = ComposeRunner(OPUS, "medium", _preview, style=_style()).request(THEME, cands, _facts(cands),
+                                                                            AppConfig().posts, "c-x")
+    marked = [i for i, b in enumerate(styled.content) if "cache_control" in b]
+    images = [i for i, b in enumerate(styled.content) if b["type"] == "image"]
+    assert marked == [images[1]]  # второй (последний) скриншот-образец, кандидаты — после метки
+    plain = ComposeRunner(OPUS, "medium", _preview).request(THEME, cands, _facts(cands), AppConfig().posts, "c-x")
+    assert plain.system[0]["cache_control"] == {"type": "ephemeral"}
+    assert not any("cache_control" in b for b in plain.content)

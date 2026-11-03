@@ -24,6 +24,7 @@ from photo_chooser.config import AppConfig, CloudCfg, PostsCfg, Theme, themes_ke
 from photo_chooser.judge.cost import (
     COMPOSE_LABEL_TOKENS,
     HAIKU_PRICE_LIMIT_TOKENS,
+    TokenUsage,
     group_input_tokens,
     price_for,
     usage_usd,
@@ -106,8 +107,7 @@ class GroupResult(Generic[T]):
     items: list[T]
     unjudged: list[str]
     refused: bool
-    input_tokens: int
-    output_tokens: int
+    usage: TokenUsage
 
 
 @dataclass
@@ -119,6 +119,7 @@ class StageOutcome(Generic[T]):
     from_cache: int = 0
     refused_groups: int = 0
     error: Exception | None = None  # ошибка API: тема не обработана, остальные продолжаются
+    usage: TokenUsage = TokenUsage()  # токены запросов этого запуска (кэш — для строки отчёта)
 
 
 @dataclass
@@ -173,10 +174,9 @@ def _clamp(v: int) -> int:
 
 def _parse_group(response, uuids: list[str], output_model: type[BaseModel], convert) -> GroupResult:
     ids = {f"p{i:02d}": u for i, u in enumerate(uuids, 1)}
-    usage = response.usage
-    tokens = dict(input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
+    usage = TokenUsage.of(response.usage)
     if response.stop_reason == "refusal":
-        return GroupResult(items=[], unjudged=list(uuids), refused=True, **tokens)
+        return GroupResult(items=[], unjudged=list(uuids), refused=True, usage=usage)
     text = "".join(block.text for block in response.content if block.type == "text")
     try:
         parsed = output_model.model_validate_json(text) if text else None
@@ -189,7 +189,7 @@ def _parse_group(response, uuids: list[str], output_model: type[BaseModel], conv
             continue
         seen.add(uuid)
         items.append(convert(uuid, item))
-    return GroupResult(items=items, unjudged=[u for u in uuids if u not in seen], refused=False, **tokens)
+    return GroupResult(items=items, unjudged=[u for u in uuids if u not in seen], refused=False, usage=usage)
 
 
 def _check_group_price(groups: list[list[Asset]], cfg: CloudCfg, extra_tokens: int = 0) -> None:
@@ -204,6 +204,7 @@ def _merge(outcome: StageOutcome, result: GroupResult, usd: float, lock: threadi
     """Вызывается из рабочих потоков транспорта."""
     with lock:
         outcome.usd += usd
+        outcome.usage += result.usage
         outcome.results.update({x.uuid: x for x in result.items})
         outcome.unjudged.extend(result.unjudged)
         outcome.refused_groups += int(result.refused)
@@ -231,6 +232,20 @@ class ScreenRunner:
         return _parse_group(response, uuids, ScreenOutput, convert)
 
 
+def _cache_marker(ttl: str) -> dict:
+    return {"type": "ephemeral"} if ttl == "5m" else {"type": "ephemeral", "ttl": ttl}
+
+
+def _mark_prefix(system: str, references: list[dict], ttl: str) -> tuple[str | list[dict], list[dict]]:
+    """Метка кэша на последнем блоке общего префикса (D15): последний скриншот-образец, без них — system.
+    Тема и превью кандидатов идут после метки и в кэш не попадают."""
+    images = [i for i, b in enumerate(references) if b["type"] == "image"]
+    if images:
+        references[images[-1]] = {**references[images[-1]], "cache_control": _cache_marker(ttl)}
+        return system, references
+    return [{"type": "text", "text": system, "cache_control": _cache_marker(ttl)}], references
+
+
 def reference_content(style: "StyleContext | None") -> list[dict]:
     """Скриншоты страницы перед кандидатами: у каждого подпись — грид ленты или stories (FR-11.4)."""
     content: list[dict] = []
@@ -248,8 +263,9 @@ def judge_prompt_version(style: "StyleContext | None") -> str:
 
 class JudgeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, cache_ttl: Literal["5m", "1h"] = "5m"):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.cache_ttl = cache_ttl
 
     @property
     def prompt_version(self) -> str:
@@ -260,15 +276,15 @@ class JudgeRunner:
         return self.style.extra_tokens if self.style else 0
 
     def request(self, theme: Theme, group: list[Asset], custom_id: str) -> ModelRequest:
-        system, content = JUDGE_SYSTEM_PROMPT, []
+        system = JUDGE_SYSTEM_PROMPT
         if self.style is not None:
             system += "\n\n" + STYLE_BLOCK.format(text=self.style.text)
             if self.style.references:  # оговорка о скриншотах — только когда они приложены
                 system += "\n" + STYLE_SCREENSHOTS_NOTE
-            content += reference_content(self.style)
+        marked, content = _mark_prefix(system, reference_content(self.style), self.cache_ttl)
         content += image_content(group, self.preview, with_orientation=True)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        return ModelRequest(custom_id, self.model, self.effort, system, content, JudgeOutput)
+        return ModelRequest(custom_id, self.model, self.effort, marked, content, JudgeOutput, self.cache_ttl)
 
     def parse(self, response, shots: list[tuple[str, str]]) -> GroupResult[Judgment]:
         """shots — (uuid, ориентация) кадров группы по порядку p01…"""
@@ -310,7 +326,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
         def handle(response) -> None:
             result = runner.parse(response, themes, uuids)
             cache.put_screenings(result.items, key, runner.model, SCREEN_PROMPT_VERSION)
-            usd = usage_usd(result.input_tokens, result.output_tokens, price)
+            usd = usage_usd(result.usage, price)
             cache.add_spend(album_uuid, runner.model, usd)
             _merge(outcome, result, usd, lock)
 
@@ -335,7 +351,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
         def handle(response) -> None:
             result = runner.parse(response, shots)
             cache.put_judgments(result.items, meta["theme_key"], meta["model"], meta["prompt_version"])
-            usd = usage_usd(result.input_tokens, result.output_tokens, price)
+            usd = usage_usd(result.usage, price, cache_ttl=meta.get("cache_ttl") or "5m", batch=meta["batch"])
             cache.add_spend(album_uuid, meta["model"], usd)
             if outcome is not None:
                 _merge(outcome, result, usd, lock)
@@ -363,7 +379,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
                                                from_cache=len(cached))
         for n, g in enumerate(groups, 1):
             meta = {"theme_key": key, "model": runner.model, "prompt_version": version, "batch": transport.batch,
-                    "shots": [[a.uuid, orientation(a)] for a in g]}
+                    "cache_ttl": runner.cache_ttl, "shots": [[a.uuid, orientation(a)] for a in g]}
             jobs.append(Job(lambda theme=t.theme, g=g, cid=f"j-{key}-{n:02d}": runner.request(theme, g, cid), key,
                             meta, handler_for(meta, outcome)))
     for failure in transport.run("judge", jobs, log):
@@ -378,8 +394,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
 class ComposeResult:
     output: ComposeOutput | None  # None — отказ или неразборчивый ответ
     refused: bool
-    input_tokens: int
-    output_tokens: int
+    usage: TokenUsage
 
 
 @dataclass
@@ -389,6 +404,7 @@ class ComposeOutcome:
     from_cache: bool
     refused: bool
     note: str = ""  # почему сборка не удалась, если не отказ
+    usage: TokenUsage = TokenUsage()
 
 
 def _num(x: float) -> str:
@@ -405,15 +421,16 @@ def _compose_style_system(system: str, style: "StyleContext | None") -> str:
 
 class ComposeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, cache_ttl: Literal["5m", "1h"] = "5m"):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.cache_ttl = cache_ttl
 
     def request(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
                 custom_id: str) -> ModelRequest:
         system = _compose_style_system(COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels,
                                                                     carousel_size=limits.carousel_size,
                                                                     stories=limits.stories), self.style)
-        content = reference_content(self.style)
+        system, content = _mark_prefix(system, reference_content(self.style), self.cache_ttl)
         for i, a in enumerate(cands, 1):
             f = facts[a.uuid]
             with objc.autorelease_pool():
@@ -424,18 +441,18 @@ class ComposeRunner:
                                                     f"«{reason}»"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        return ModelRequest(custom_id, self.model, self.effort, system, content, ComposeOutput)
+        return ModelRequest(custom_id, self.model, self.effort, system, content, ComposeOutput, self.cache_ttl)
 
     def parse(self, response) -> ComposeResult:
-        tokens = dict(input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
+        usage = TokenUsage.of(response.usage)
         if response.stop_reason == "refusal":
-            return ComposeResult(output=None, refused=True, **tokens)
+            return ComposeResult(output=None, refused=True, usage=usage)
         text = "".join(block.text for block in response.content if block.type == "text")
         try:
             output = ComposeOutput.model_validate_json(text) if text else None
         except pydantic.ValidationError:
             output = None
-        return ComposeResult(output=output, refused=False, **tokens)
+        return ComposeResult(output=output, refused=False, usage=usage)
 
 
 def compose_input_fingerprint(cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
@@ -454,14 +471,15 @@ def _answer_known(output: ComposeOutput, known: dict[str, str]) -> bool:
 
 
 def _compose_outcome(result: ComposeResult, usd: float, ids: dict[str, Asset], limits: PostsCfg) -> ComposeOutcome:
+    paid = dict(usd=usd, from_cache=False, usage=result.usage)
     if result.output is None:
-        return ComposeOutcome(posts=None, usd=usd, from_cache=False, refused=result.refused,
-                              note="" if result.refused else "неразборчивый ответ")
+        return ComposeOutcome(posts=None, refused=result.refused, note="" if result.refused else "неразборчивый ответ",
+                              **paid)
     posts = validate_composition(result.output, ids, limits)
     answered = any(c.slides for c in result.output.carousels) or bool(result.output.stories)
     if answered and not posts.carousels and not posts.stories:  # модель ответила, но ни одного известного кадра
-        return ComposeOutcome(posts=None, usd=usd, from_cache=False, refused=False, note="в ответе нет известных кадров")
-    return ComposeOutcome(posts=posts, usd=usd, from_cache=False, refused=False)
+        return ComposeOutcome(posts=None, refused=False, note="в ответе нет известных кадров", **paid)
+    return ComposeOutcome(posts=posts, refused=False, **paid)
 
 
 def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks: list[ComposeTask], cfg: AppConfig,
@@ -476,7 +494,7 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
 
         def handle(response) -> None:
             result = runner.parse(response)
-            usd = usage_usd(result.input_tokens, result.output_tokens, price)
+            usd = usage_usd(result.usage, price, cache_ttl=meta.get("cache_ttl") or "5m", batch=meta["batch"])
             cache.add_spend(album_uuid, meta["model"], usd)
             if result.output is not None and _answer_known(result.output, meta["ids"]):
                 cache.put_composition(meta["theme_key"], meta["model"], meta["prompt_version"], meta["input_fp"],
@@ -513,7 +531,8 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
                              f"порога {HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.compose_candidates.")
         log(f"  «{t.theme.name}»: кандидатов {len(t.cands)}")
         meta = {"theme_key": key, "model": runner.model, "prompt_version": COMPOSE_PROMPT_VERSION,
-                "batch": transport.batch, "input_fp": fingerprint, "ids": {cid: a.uuid for cid, a in ids.items()}}
+                "batch": transport.batch, "cache_ttl": runner.cache_ttl, "input_fp": fingerprint,
+                "ids": {cid: a.uuid for cid, a in ids.items()}}
         sent[key] = ids
         jobs.append(Job(lambda t=t, cid=f"c-{key}": runner.request(t.theme, t.cands, t.facts, cfg.posts, cid), key,
                         meta, handler_for(meta, key)))

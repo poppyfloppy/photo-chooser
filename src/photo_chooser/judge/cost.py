@@ -1,6 +1,7 @@
 """Оценка стоимости облачных ступеней и защита бюджета (SPEC FR-9.1). Константы — docs/spike-findings.md."""
 
 import math
+from dataclasses import dataclass
 
 from photo_chooser.config import CloudCfg, Price
 
@@ -11,6 +12,27 @@ EST_OUTPUT_TOKENS_JUDGE = 80  # на снимок, с причиной
 EST_OUTPUT_TOKENS_COMPOSE = 1500  # на запрос сборки постов темы
 COMPOSE_LABEL_TOKENS = 60  # подпись кандидата сборки: id, ориентация, оценки, причина
 HAIKU_PRICE_LIMIT_TOKENS = 100_000  # цена Haiku 5.5 действует для запросов до 100K токенов
+CACHE_WRITE_MULTIPLIER = {"5m": 1.25, "1h": 2.0}  # запись кэша — доля цены входа по TTL (FR-9.2)
+BATCH_DISCOUNT = 0.5  # Message Batches: скидка на все токены, включая запись и чтение кэша (FR-12)
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    input: int = 0  # входные токены без кэша
+    output: int = 0
+    cache_write: int = 0
+    cache_read: int = 0
+
+    @classmethod
+    def of(cls, usage) -> "TokenUsage":
+        """Из usage ответа API; поля кэша могут отсутствовать или быть None."""
+        return cls(input=usage.input_tokens, output=usage.output_tokens,
+                   cache_write=getattr(usage, "cache_creation_input_tokens", None) or 0,
+                   cache_read=getattr(usage, "cache_read_input_tokens", None) or 0)
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        return TokenUsage(self.input + other.input, self.output + other.output, self.cache_write + other.cache_write,
+                          self.cache_read + other.cache_read)
 
 
 class UnknownModelPrice(Exception):
@@ -40,8 +62,11 @@ def price_for(cfg: CloudCfg, model: str) -> Price:
     return cfg.pricing[model]
 
 
-def usage_usd(input_tokens: int, output_tokens: int, price: Price) -> float:
-    return input_tokens * price.input / 1e6 + output_tokens * price.output / 1e6
+def usage_usd(u: TokenUsage, price: Price, *, cache_ttl: str = "5m", batch: bool = False) -> float:
+    """Стоимость по usage (FR-9.2): вход, запись кэша по TTL, чтение кэша, выход; в пакете — со скидкой."""
+    usd = (u.input * price.input + u.cache_write * price.input * CACHE_WRITE_MULTIPLIER[cache_ttl]
+           + u.cache_read * price.cache_read_price + u.output * price.output) / 1e6
+    return usd * BATCH_DISCOUNT if batch else usd
 
 
 def group_input_tokens(sizes: list[tuple[int, int]], long_side: int) -> int:
@@ -54,7 +79,8 @@ def _stage_usd(n: int, cfg: CloudCfg, output_per_photo: int, price: Price, extra
     side = cfg.preview_long_side_px
     per_image = image_tokens(side, side * 3 // 4, side)
     groups = math.ceil(n / cfg.group_size)
-    return usage_usd(n * per_image + groups * (PROMPT_OVERHEAD_TOKENS + extra_per_group), n * output_per_photo, price)
+    return usage_usd(TokenUsage(input=n * per_image + groups * (PROMPT_OVERHEAD_TOKENS + extra_per_group),
+                                output=n * output_per_photo), price)
 
 
 def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_model: str, judge_model: str,
@@ -69,8 +95,8 @@ def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_mo
         judge_price = price_for(cfg, judge_model)
         side = cfg.preview_long_side_px
         per_image = image_tokens(side, side * 3 // 4, side) + COMPOSE_LABEL_TOKENS
-        total += sum(usage_usd(n * per_image + PROMPT_OVERHEAD_TOKENS + judge_extra_tokens, EST_OUTPUT_TOKENS_COMPOSE,
-                               judge_price) for n in n_compose if n > 0)
+        total += sum(usage_usd(TokenUsage(input=n * per_image + PROMPT_OVERHEAD_TOKENS + judge_extra_tokens,
+                                          output=EST_OUTPUT_TOKENS_COMPOSE), judge_price) for n in n_compose if n > 0)
     return total
 
 

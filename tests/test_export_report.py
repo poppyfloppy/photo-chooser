@@ -120,6 +120,22 @@ def test_report_no_cloud_header_and_summary(tmp_path):
     assert "IMG_9.HEIC — нет превью" in text and "Недобор" not in text
 
 
+CACHE_LINE = "- Кэш мета-блока (вторая ступень и сборка): записано 4.5 тыс., прочитано 36.0 тыс. токенов"
+
+
+def test_report_cache_line(tmp_path):
+    cloud = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+                         prompt_versions="screen-4, judge-7, compose-5", run_at=NOW, album="Egypt.26")
+    path = tmp_path / "report.md"
+    stats = _stats(cache_write_tokens=4500, cache_read_tokens=36000)
+    write_report(path, Theme(name="Гиза", query="пирамиды"), cloud, _empty_posts(tmp_path), {}, stats)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[lines.index(CACHE_LINE) - 1].startswith("- Стоимость:")
+    local = ReportHeader(screen_model=None, model=None, effort=None, prompt_versions=None, run_at=NOW)
+    write_report(path, Theme(name="Гиза", query="пирамиды"), local, _empty_posts(tmp_path), {}, stats)
+    assert "Кэш мета-блока" not in path.read_text(encoding="utf-8")
+
+
 def test_report_cloud_header_and_style_line(tmp_path):
     header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
                           prompt_versions="screen-2, judge-4/style-ab12cd34, compose-1", run_at=NOW, warnings=[],
