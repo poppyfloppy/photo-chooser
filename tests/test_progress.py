@@ -75,7 +75,8 @@ def sleeps(monkeypatch):
     return calls
 
 
-def test_make_client_has_request_timeout_and_no_sdk_retries():
+def test_make_client_has_request_timeout_and_no_sdk_retries(monkeypatch):
+    monkeypatch.setattr(stages.keychain, "read_api_key", lambda: None)
     client = make_client()
     assert client.timeout == stages.REQUEST_TIMEOUT_S == 300
     assert client.max_retries == 0  # повторы делает call_model, чтобы их было видно

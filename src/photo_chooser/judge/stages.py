@@ -19,6 +19,7 @@ import objc
 import pydantic
 from pydantic import BaseModel
 
+from photo_chooser import keychain
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, CloudCfg, ConfigError, PostsCfg, Theme, themes_key
 from photo_chooser.judge.cost import (
@@ -130,16 +131,20 @@ class StageOutcome(Generic[T]):
 
 
 def make_client() -> anthropic.Anthropic:
-    """Ключ — из ANTHROPIC_API_KEY или профиля `ant auth login`. Повторы SDK выключены: их делает call_model,
-    чтобы о каждом было видно в выводе."""
-    return anthropic.Anthropic(max_retries=0, timeout=REQUEST_TIMEOUT_S)
+    """Ключ — из Keychain; без записи SDK берёт ANTHROPIC_API_KEY, затем профиль `ant auth login` (FR-13.1).
+    Повторы SDK выключены: их делает call_model, чтобы о каждом было видно в выводе."""
+    return anthropic.Anthropic(api_key=keychain.read_api_key(), max_retries=0, timeout=REQUEST_TIMEOUT_S)
+
+
+def has_credentials(client: anthropic.Anthropic) -> bool:
+    return bool(client.api_key or client.auth_token or client.credentials)
 
 
 def check_credentials(client) -> None:
     """SDK создаёт клиента и без ключа и падает только на первом запросе — проверяем заранее."""
-    if isinstance(client, anthropic.Anthropic) and not (client.api_key or client.auth_token or client.credentials):
-        raise ConfigError("Нет ключа Claude API: задайте ANTHROPIC_API_KEY или выполните `ant auth login`. "
-                          "Без облака можно запустить с --no-cloud.")
+    if isinstance(client, anthropic.Anthropic) and not has_credentials(client):
+        raise ConfigError("Нет ключа Claude API: выполните `photo-chooser key set` или задайте ANTHROPIC_API_KEY / "
+                          "`ant auth login`. Без облака можно запустить с --no-cloud.")
 
 
 def _quiet(message: str) -> None:

@@ -1,5 +1,6 @@
-"""CLI: photo-chooser albums | run (SPEC FR-7)."""
+"""CLI: photo-chooser albums | run | style | key (SPEC FR-7)."""
 
+import os
 import traceback
 from contextlib import contextmanager
 from datetime import datetime
@@ -8,11 +9,11 @@ from pathlib import Path
 import anthropic
 import typer
 
-from photo_chooser import images, pipeline, style
+from photo_chooser import images, keychain, pipeline, style
 from photo_chooser.cache import Cache
 from photo_chooser.config import ConfigError, load_app_config, load_trip, trip_from_args
 from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice, price_for, usage_usd
-from photo_chooser.judge.stages import check_credentials, make_client
+from photo_chooser.judge.stages import check_credentials, has_credentials, make_client
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosAccessError
 
 EXIT_ERROR, EXIT_CONFIG, EXIT_BUDGET, EXIT_ALBUM, EXIT_ACCESS = 1, 2, 3, 4, 5
@@ -22,6 +23,8 @@ STYLE_SPEND_KEY = "style"  # расход команды style — отдель�
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Посты для Instagram из альбома Photos: карусели ленты и stories по темам поездки.")
+key_app = typer.Typer(no_args_is_help=True, help="Ключ Claude API в Keychain (запись anthropic-api-key).")
+app.add_typer(key_app, name="key")
 
 
 def make_library():
@@ -65,8 +68,8 @@ def _exit_codes():
         _err(str(e))
         raise typer.Exit(EXIT_ACCESS) from None
     except anthropic.AuthenticationError:
-        _err("Claude API не принял ключ: задайте ANTHROPIC_API_KEY или выполните `ant auth login`. "
-             "Без облака можно запустить с --no-cloud.")
+        _err("Claude API не принял ключ: замените его командой `photo-chooser key set` (или ANTHROPIC_API_KEY / "
+             "`ant auth login`). Без облака можно запустить с --no-cloud.")
         raise typer.Exit(EXIT_CONFIG) from None
     except typer.Exit:
         raise
@@ -153,6 +156,42 @@ def style_command(
         make_cache().add_spend(STYLE_SPEND_KEY, cfg.style.model, usd)
         typer.echo(f"Профиль стиля: {STYLE_PATH} (прежний — style.prev.md)\nСтоимость: ${usd:.4f}\n"
                    "Прочитайте профиль и поправьте его, если нужно: он уйдёт в каждый запрос второй ступени.")
+
+
+@key_app.command("set")
+def key_set() -> None:
+    """Сохранить или заменить ключ: его спросит утилита security, ввод скрыт (FR-13.2)."""
+    code = keychain.store_api_key()
+    if code != 0:
+        _err(f"Ключ не сохранён: security завершилась с кодом {code}")
+        raise typer.Exit(EXIT_ERROR)
+    typer.echo(f"Ключ сохранён в Keychain (запись {keychain.SERVICE})")
+
+
+@key_app.command("delete")
+def key_delete(yes: bool = typer.Option(False, "--yes", help="Удалить без подтверждения")) -> None:
+    """Удалить ключ из Keychain."""
+    with _exit_codes():
+        if not yes and not typer.confirm("Удалить ключ Claude API из Keychain?", default=False):
+            _err("Отменено: ключ не удалён")
+            raise typer.Exit(EXIT_ERROR)
+        if keychain.delete_api_key():
+            typer.echo("Ключ удалён из Keychain")
+        else:
+            typer.echo(f"В Keychain нет записи {keychain.SERVICE}")
+
+
+@key_app.command("status")
+def key_status() -> None:
+    """Откуда будет взят ключ; сам ключ не выводится и в API не проверяется (FR-13.3)."""
+    if keychain.has_api_key():
+        typer.echo(f"Ключ Claude API: Keychain (запись {keychain.SERVICE})")
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        typer.echo("Ключ Claude API: переменная ANTHROPIC_API_KEY")
+    elif has_credentials(anthropic.Anthropic()):
+        typer.echo("Ключ Claude API: профиль ant auth login")
+    else:
+        typer.echo("Ключ Claude API не найден — выполните `photo-chooser key set`")
 
 
 def _print_result(result: pipeline.RunResult, opts: pipeline.RunOptions, limit: float) -> bool:
