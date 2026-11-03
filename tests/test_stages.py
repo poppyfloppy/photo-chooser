@@ -22,6 +22,7 @@ from fakes import (
 from photo_chooser.cache import Cache
 from photo_chooser.config import CloudCfg, Theme, themes_key
 from photo_chooser.judge import transport
+from photo_chooser.judge.cost import TokenUsage, usage_usd
 from photo_chooser.judge.prompts import (
     JUDGE_PROMPT_VERSION,
     JUDGE_SYSTEM_PROMPT,
@@ -218,7 +219,7 @@ def test_refusal_marks_group_unjudged(tmp_path):
     group = _assets(2)
     result = judge_group(client, runner, THEMES[0], group)
     assert result.refused and result.items == [] and result.unjudged == ["U000", "U001"]
-    assert (result.input_tokens, result.output_tokens) == (30_000, 100)
+    assert result.usage == TokenUsage(input=30_000, output=100)
     outcome = judge_one(client, runner, cache, THEMES[0], group, {}, CloudCfg(), "album-1")
     assert outcome.results == {} and sorted(outcome.unjudged) == ["U000", "U001"]
     assert cache.album_spend("album-1") == pytest.approx(30_000 * 0.10 / 1e6 + 100 * 0.50 / 1e6)
@@ -610,3 +611,12 @@ def test_judge_handler_from_meta_writes_cache_and_spend(tmp_path):
                          [JudgeTask(THEMES[0], assets, {})], CloudCfg(), "album-1")
     assert outcomes[THEMES[0].key()].from_cache == 2 and client.calls == []
     assert cache.album_spend("album-1") == pytest.approx(GROUP_USD)
+
+
+def test_judge_spend_includes_cache_tokens(tmp_path):
+    cache = Cache(tmp_path / "c.sqlite")
+    client = FakeClient(judge_handler(cache_write=4000, cache_read=40000))
+    judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], _assets(2), {}, CloudCfg(), "album-1")
+    price = CloudCfg().pricing[HAIKU]
+    expected = usage_usd(TokenUsage(input=20_000, output=2_000, cache_write=4000, cache_read=40000), price)
+    assert cache.album_spend("album-1") == pytest.approx(expected)

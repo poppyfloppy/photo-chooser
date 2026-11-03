@@ -9,7 +9,7 @@ from pathlib import Path
 
 from photo_chooser import images
 from photo_chooser.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, StyleCfg
-from photo_chooser.judge.cost import PROMPT_OVERHEAD_TOKENS, image_tokens, price_for, usage_usd
+from photo_chooser.judge.cost import PROMPT_OVERHEAD_TOKENS, TokenUsage, image_tokens, price_for, usage_usd
 from photo_chooser.judge.prompts import STYLE_SYSTEM_PROMPT
 from photo_chooser.judge.transport import ModelRequest, call_model
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosLibrary, resolve_album
@@ -71,7 +71,7 @@ def estimate_profile_usd(posts: list[Asset], screenshots: list[Asset], cfg: AppC
     tokens = (sum(image_tokens(a.width, a.height, POST_LONG_SIDE) for a in posts)
               + sum(image_tokens(a.width, a.height, SCREENSHOT_LONG_SIDE) for a in screenshots)
               + PROMPT_OVERHEAD_TOKENS)
-    return usage_usd(tokens, EST_PROFILE_OUTPUT_TOKENS, price_for(cfg.cloud, cfg.style.model))
+    return usage_usd(TokenUsage(input=tokens, output=EST_PROFILE_OUTPUT_TOKENS), price_for(cfg.cloud, cfg.style.model))
 
 
 def _image_block(data: bytes) -> dict:

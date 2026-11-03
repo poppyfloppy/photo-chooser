@@ -12,7 +12,7 @@ import typer
 from photo_chooser import images, keychain, pipeline, style
 from photo_chooser.cache import Cache
 from photo_chooser.config import ConfigError, load_app_config, load_trip, trip_from_args
-from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice, price_for, usage_usd
+from photo_chooser.judge.cost import BudgetExceeded, TokenUsage, UnknownModelPrice, price_for, usage_usd
 from photo_chooser.judge.errors import InsufficientCredit
 from photo_chooser.judge.transport import check_credentials, has_credentials, make_client
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosAccessError
@@ -156,7 +156,8 @@ def style_command(
         check_credentials(client)
         profile = style.build_profile(client, cfg.style.model, cfg.cloud.effort, samples)
         style.save_profile(STYLE_PATH, profile.text)
-        usd = usage_usd(profile.input_tokens, profile.output_tokens, price_for(cfg.cloud, cfg.style.model))
+        usd = usage_usd(TokenUsage(input=profile.input_tokens, output=profile.output_tokens),
+                        price_for(cfg.cloud, cfg.style.model))
         make_cache().add_spend(STYLE_SPEND_KEY, cfg.style.model, usd)
         typer.echo(f"Профиль стиля: {STYLE_PATH} (прежний — style.prev.md)\nСтоимость: ${usd:.4f}\n"
                    "Прочитайте профиль и поправьте его, если нужно: он уйдёт в каждый запрос второй ступени.")

@@ -125,12 +125,17 @@ def themes_key(album_title: str, themes: list[Theme]) -> str:
 class Price(_Strict):
     input: float
     output: float
+    cache_read: float | None = None  # чтение кэша; без значения — 0.1 × input (FR-8)
+
+    @property
+    def cache_read_price(self) -> float:
+        return self.cache_read if self.cache_read is not None else 0.1 * self.input
 
 
 DEFAULT_PRICING = {
-    "claude-haiku-5-5": Price(input=0.10, output=0.50),
-    "claude-sonnet-5-5": Price(input=2.00, output=10.00),
-    "claude-opus-5-5": Price(input=4.00, output=20.00),
+    "claude-haiku-5-5": Price(input=0.10, output=0.50, cache_read=0.01),
+    "claude-sonnet-5-5": Price(input=2.00, output=10.00, cache_read=0.10),
+    "claude-opus-5-5": Price(input=4.00, output=20.00, cache_read=0.20),
 }
 
 

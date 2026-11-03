@@ -15,7 +15,7 @@ from photo_chooser.analysis.quality import compute_features, local_quality, perc
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, Theme, TripConfig, themes_key
 from photo_chooser.export import ExportedPosts, ensure_outside_library, export_posts, new_run_dir, safe_name
-from photo_chooser.judge.cost import check_budget, estimate_run_usd, price_for
+from photo_chooser.judge.cost import TokenUsage, check_budget, estimate_run_usd, price_for
 from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import (
     ComposeRunner,
@@ -105,6 +105,7 @@ class _ThemeWork:
     comp: list[Asset] = field(default_factory=list)  # кандидаты сборки
     posts: Posts = field(default_factory=lambda: Posts([], []))
     compose_usd: float = 0.0
+    compose_usage: TokenUsage = TokenUsage()
     error: str | None = None
     notes: list[str] = field(default_factory=list)  # строки хода, которые выводятся при выгрузке темы
 
@@ -298,7 +299,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                                    [ComposeTask(w.theme, w.comp, w.facts) for w in to_compose], cfg, album.uuid, log)
             for w in to_compose:
                 c = composed[w.theme.key()]
-                w.posts, w.compose_usd = c.posts, c.usd
+                w.posts, w.compose_usd, w.compose_usage = c.posts, c.usd, c.usage
                 if w.posts is None:
                     failure = "модель отказалась" if c.refused else c.note
                     w.warnings.append(f"Сборка не удалась — разложено по оценкам ({failure})")
@@ -322,6 +323,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             if w.error is None:
                 log(f"  «{t.name}»: {_posts_line(w.posts)}")
             exported = export_posts(library, w.posts, theme_dir, Path(tmp), cfg)
+            cached = (judge.usage if judge else TokenUsage()) + w.compose_usage
             header = ReportHeader(
                 screen_model=None if opts.no_cloud or screen is None else screen_model,
                 model=None if opts.no_cloud else judge_model,
@@ -338,7 +340,8 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 from_cache=judge.from_cache if judge else 0, unjudged=len(judge.unjudged) if judge else 0,
                 usd_screen=screen.usd if screen else 0.0, usd_judge=judge.usd if judge else 0.0,
                 usd_album_total=cache.album_spend(album.uuid), skipped=skipped,
-                sent_to_compose=len(w.comp), usd_compose=w.compose_usd)
+                sent_to_compose=len(w.comp), usd_compose=w.compose_usd,
+                cache_write_tokens=cached.cache_write, cache_read_tokens=cached.cache_read)
             report_path = theme_dir / "report.md"
             write_report(report_path, t, header, exported, w.facts, stats)
             outcomes.append(ThemeOutcome(t, report_path, exported, w.error))

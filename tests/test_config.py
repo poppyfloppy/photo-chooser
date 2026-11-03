@@ -143,6 +143,12 @@ def test_app_config_partial_override(tmp_path):
     assert cfg.posts.stories == 9
 
 
+def test_pricing_override_without_cache_read_uses_default_share(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("cloud:\n  pricing:\n    claude-opus-5-5: {input: 4, output: 20}\n", encoding="utf-8")
+    assert load_app_config(path).cloud.pricing["claude-opus-5-5"].cache_read_price == pytest.approx(0.4)
+
+
 def test_app_config_pricing_override_keeps_other_models(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("cloud:\n  pricing:\n    claude-haiku-5-5: {input: 0.2, output: 1.0}\n", encoding="utf-8")
