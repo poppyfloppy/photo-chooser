@@ -10,6 +10,7 @@ from imaging import save_jpeg, varied_scene
 from photo_chooser import cli
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig
+from photo_chooser.judge import stages
 from photo_chooser.library.base import PhotosAccessError
 from photo_chooser.models import AlbumRef
 
@@ -93,6 +94,65 @@ def test_missing_api_key_exit_2_with_hint(env, monkeypatch):
     result = runner.invoke(cli.app, ["run", "--album", "Египет 2026", "--theme", "Гиза", "--query", "пирамиды"])
     assert result.exit_code == 2
     assert "ANTHROPIC_API_KEY" in result.output and "--no-cloud" in result.output
+    assert "photo-chooser key set" in result.output
+
+
+def test_make_client_uses_keychain_key(monkeypatch):
+    monkeypatch.setattr(stages.keychain, "read_api_key", lambda: "sk-test")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert stages.make_client().api_key == "sk-test"
+
+
+def test_make_client_falls_back_to_env(monkeypatch):
+    monkeypatch.setattr(stages.keychain, "read_api_key", lambda: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env")
+    assert stages.make_client().api_key == "sk-env"
+
+
+@pytest.mark.parametrize(("code", "line", "exit_code"), [
+    (0, "Ключ сохранён в Keychain (запись anthropic-api-key)", 0),
+    (1, "Ключ не сохранён: security завершилась с кодом 1", 1),
+])
+def test_key_set_success_and_failure(monkeypatch, code, line, exit_code):
+    monkeypatch.setattr(cli.keychain, "store_api_key", lambda: code)
+    result = runner.invoke(cli.app, ["key", "set"])
+    assert result.exit_code == exit_code
+    assert line in result.output
+
+
+def test_key_delete_confirms(monkeypatch):
+    deleted: list[bool] = []
+    monkeypatch.setattr(cli.keychain, "delete_api_key", lambda: deleted.append(True) or True)
+    declined = runner.invoke(cli.app, ["key", "delete"], input="n\n")
+    assert declined.exit_code == 1 and "Отменено: ключ не удалён" in declined.output
+    assert deleted == []
+    confirmed = runner.invoke(cli.app, ["key", "delete", "--yes"])
+    assert confirmed.exit_code == 0 and "Ключ удалён из Keychain" in confirmed.output
+
+
+def test_key_delete_without_item(monkeypatch):
+    monkeypatch.setattr(cli.keychain, "delete_api_key", lambda: False)
+    result = runner.invoke(cli.app, ["key", "delete", "--yes"])
+    assert result.exit_code == 0 and "В Keychain нет записи anthropic-api-key" in result.output
+
+
+@pytest.mark.parametrize(("in_keychain", "env_key", "ant", "line"), [
+    (True, "sk-env", True, "Ключ Claude API: Keychain (запись anthropic-api-key)"),
+    (False, "sk-env", True, "Ключ Claude API: переменная ANTHROPIC_API_KEY"),
+    (False, None, True, "Ключ Claude API: профиль ant auth login"),
+    (False, None, False, "Ключ Claude API не найден — выполните `photo-chooser key set`"),
+])
+def test_key_status_order(monkeypatch, in_keychain, env_key, ant, line):
+    monkeypatch.setattr(cli.keychain, "has_api_key", lambda: in_keychain)
+    monkeypatch.setattr(cli, "has_credentials", lambda client: ant)
+    if env_key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", env_key)
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = runner.invoke(cli.app, ["key", "status"])
+    assert result.exit_code == 0
+    assert result.output.strip() == line
+    assert "sk-" not in result.output
 
 
 def test_albums_lists_titles_and_counts(env):
