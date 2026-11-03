@@ -13,10 +13,11 @@ from photo_chooser import images, keychain, pipeline, style
 from photo_chooser.cache import Cache
 from photo_chooser.config import ConfigError, load_app_config, load_trip, trip_from_args
 from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice, price_for, usage_usd
+from photo_chooser.judge.errors import InsufficientCredit
 from photo_chooser.judge.stages import check_credentials, has_credentials, make_client
 from photo_chooser.library.base import AlbumAmbiguous, AlbumNotFound, PhotosAccessError
 
-EXIT_ERROR, EXIT_CONFIG, EXIT_BUDGET, EXIT_ALBUM, EXIT_ACCESS = 1, 2, 3, 4, 5
+EXIT_ERROR, EXIT_CONFIG, EXIT_BUDGET, EXIT_ALBUM, EXIT_ACCESS, EXIT_BILLING = 1, 2, 3, 4, 5, 6
 LOG_DIR = Path("~/Library/Logs/photo-chooser").expanduser()
 STYLE_PATH = style.DEFAULT_STYLE_PATH
 STYLE_SPEND_KEY = "style"  # расход команды style — отдельно от бюджетов альбомов (FR-11.6)
@@ -61,6 +62,9 @@ def _exit_codes():
     except BudgetExceeded as e:
         _err(str(e))
         raise typer.Exit(EXIT_BUDGET) from None
+    except InsufficientCredit as e:
+        _err(str(e))
+        raise typer.Exit(EXIT_BILLING) from None
     except (AlbumNotFound, AlbumAmbiguous) as e:
         _err(str(e))
         raise typer.Exit(EXIT_ALBUM) from None

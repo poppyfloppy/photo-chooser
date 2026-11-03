@@ -93,6 +93,20 @@ def connection_error() -> anthropic.APIConnectionError:
     return anthropic.APIConnectionError(request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
 
 
+def credit_error() -> anthropic.BadRequestError:
+    """Так API отвечает при пустом балансе (прогон 2026-11-03_0114): 400, а не 402."""
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.BadRequestError("Your credit balance is too low to access the Anthropic API. Please go to Plans & "
+                                     "Billing to upgrade or purchase credits.",
+                                     response=httpx2.Response(400, request=request), body=None)
+
+
+def billing_error() -> anthropic.APIStatusError:
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.APIStatusError("billing", response=httpx2.Response(402, request=request),
+                                    body={"type": "error", "error": {"type": "billing_error", "message": "billing"}})
+
+
 def auth_error() -> anthropic.AuthenticationError:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     return anthropic.AuthenticationError("invalid x-api-key", response=httpx2.Response(401, request=request), body=None)

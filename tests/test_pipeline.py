@@ -8,11 +8,22 @@ import anthropic
 import pytest
 
 from conftest import make_asset
-from fakes import FakeClient, FakeLibrary, api_error, auth_error, fake_response, ids_in, last_text, output_model_of
+from fakes import (
+    FakeClient,
+    FakeLibrary,
+    api_error,
+    auth_error,
+    credit_error,
+    fake_response,
+    ids_in,
+    last_text,
+    output_model_of,
+)
 from imaging import blurred, save_jpeg, varied_scene
 from photo_chooser.cache import Cache
 from photo_chooser.config import AppConfig, ConfigError, PostsCfg, Theme, TripConfig
 from photo_chooser.judge.cost import BudgetExceeded, UnknownModelPrice
+from photo_chooser.judge.errors import InsufficientCredit
 from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION, JUDGE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
 from photo_chooser.judge.stages import (
     ComposeCarousel,
@@ -368,6 +379,29 @@ def test_auth_error_in_judge_stops_run(tmp_path):
     client = FakeClient(lambda n, kw: auth_error() if output_model_of(kw) is JudgeOutput else ok(n, kw))
     with pytest.raises(anthropic.AuthenticationError):
         _run(album, _trip(GIZA, NILE), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
+
+
+def test_credit_error_in_judge_stops_run(tmp_path):
+    album, cache = Album(tmp_path, n=3), Cache(tmp_path / "c.sqlite")
+    ok = handler()
+
+    def h(n, kw):
+        if output_model_of(kw) is JudgeOutput and "«Гиза" in last_text(kw["messages"][0]["content"]):
+            return credit_error()
+        return ok(n, kw)
+
+    client = FakeClient(h)
+    with pytest.raises(InsufficientCredit):
+        _run(album, _trip(GIZA, NILE), _cfg(tmp_path), cache, client)
+    assert client.calls_for(ComposeOutput) == []
+    assert cache.album_spend("ALB") > 0  # первая ступень оплачена и осталась в журнале
+
+
+def test_credit_error_in_compose_stops_run(tmp_path):
+    album = Album(tmp_path, n=3)
+    client = FakeClient(handler(compose=lambda n, kw: credit_error()))
+    with pytest.raises(InsufficientCredit):
+        _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client)
 
 
 MEMORY_PROBE = """
