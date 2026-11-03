@@ -209,8 +209,8 @@ class SyncTransport:
                         try:
                             f.result()
                         except Exception as e:  # noqa: BLE001 — разбирается ниже: тема или весь запуск
-                            if is_fatal(e):
-                                fatal = fatal or e
+                            if is_fatal(e) or not isinstance(e, anthropic.APIError):
+                                fatal = fatal or e  # не API — ошибка программы, её не выдаём за сбой темы
                             else:
                                 failed_tags.add(job.tag)
                                 failures.append(JobFailure(job.tag, e))
@@ -260,12 +260,17 @@ class BatchTransport:
                 continue
             log(f"  незабранный пакет {label} {pending.batch_id} от "
                 f"{datetime.fromtimestamp(pending.created_at):%Y-%m-%d %H:%M} — забираю результат")
-            self._collect(stage, pending.batch_id, {cid: handler_for(meta) for cid, meta in pending.metas.items()},
-                          {}, log)
+            try:
+                self._collect(stage, pending.batch_id,
+                              {cid: handler_for(meta) for cid, meta in pending.metas.items()}, {}, log)
+            except anthropic.NotFoundError:  # другой workspace или пакет удалён: иначе пакетный режим застрянет
+                self.cache.mark_batch_collected(pending.batch_id)
+                log(f"  пакет {label} {pending.batch_id} не найден в API — пропускаю")
 
     def run(self, stage: Stage, jobs: list[Job], log: Callable[[str], None] = _quiet) -> list[JobFailure]:
         if not jobs:
             return []
+        log(f"  пакет {BATCH_LABELS[stage]}: собираю запросов {len(jobs)}")  # кодирование превью — минуты
         by_id = {}
         requests = []
         for job in jobs:
@@ -292,8 +297,8 @@ class BatchTransport:
                 if batch.processing_status == "ended":
                     log(f"  пакет {label}: готов ({_mmss(time.monotonic() - start)})")
                     return
-                c = batch.request_counts
-                done = c.succeeded + c.errored + c.canceled + c.expired
+                # succeeded/errored/… равны нулю до конца обработки пакета — готово всё, что не в processing
+                done = total - batch.request_counts.processing
                 log(f"  пакет {label}: готово {done} из {total} запросов ({_mmss(time.monotonic() - start)})")
                 time.sleep(POLL_S)
         except KeyboardInterrupt:

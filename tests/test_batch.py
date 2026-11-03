@@ -79,9 +79,10 @@ def test_batch_progress_lines(tmp_path):
     logs: list[str] = []
     BatchTransport(FakeClient(_by_text({}), batch_polls=2), Cache(tmp_path / "c.sqlite"), ALBUM).run(
         "judge", _jobs("A", 3, []), log=logs.append)
-    assert _strip_time(logs) == ["  пакет второй ступени msgbatch_001: отправлен, запросов 3",
-                                 "  пакет второй ступени: готово 0 из 3 запросов",
-                                 "  пакет второй ступени: готово 0 из 3 запросов",
+    assert _strip_time(logs) == ["  пакет второй ступени: собираю запросов 3",
+                                 "  пакет второй ступени msgbatch_001: отправлен, запросов 3",
+                                 "  пакет второй ступени: готово 1 из 3 запросов",
+                                 "  пакет второй ступени: готово 2 из 3 запросов",
                                  "  пакет второй ступени: готов"]
 
 
@@ -212,3 +213,24 @@ def test_resume_handles_compose_meta(tmp_path):
                            AppConfig(), ALBUM)
     assert outcomes[GIZA.key()].from_cache and client.created_batches == ["msgbatch_001"]
     assert [s.asset.uuid for s in outcomes[GIZA.key()].posts.carousels[0].slides] == [cands[0].uuid]
+
+
+def test_resume_skips_batch_missing_in_api(tmp_path):
+    # пакет другого workspace или удалённый: 404 не должен навсегда ломать пакетный режим альбома
+    cache, client = Cache(tmp_path / "c.sqlite"), FakeClient(_judge_reply)
+    cache.add_batch("msgbatch_gone", ALBUM, "judge", {"j-x-01": {}})
+    logs: list[str] = []
+    BatchTransport(client, cache, ALBUM).resume("judge", lambda meta: None, log=logs.append)
+    assert logs[-1] == "  пакет второй ступени msgbatch_gone не найден в API — пропускаю"
+    assert cache.pending_batches(ALBUM, "judge") == []
+
+
+def test_handler_bug_is_not_a_theme_failure(tmp_path):
+    # ошибка не API (баг разбора) не выдаётся за «тему не обработана: ошибка Claude API»
+    def broken(resp):
+        raise KeyError("p01")
+
+    jobs = [Job(make_request=lambda: ModelRequest("j-A-01", HAIKU, "low", "s", [{"type": "text", "text": "A-1"}],
+                                                  None), tag="A", meta={}, handle=broken)]
+    with pytest.raises(KeyError):
+        BatchTransport(FakeClient(_by_text({})), Cache(tmp_path / "c.sqlite"), ALBUM).run("judge", jobs)

@@ -107,6 +107,11 @@ def billing_error() -> anthropic.APIStatusError:
                                     body={"type": "error", "error": {"type": "billing_error", "message": "billing"}})
 
 
+def not_found_error() -> anthropic.NotFoundError:
+    request = httpx2.Request("GET", "https://api.anthropic.com/v1/messages/batches/x")
+    return anthropic.NotFoundError("not found", response=httpx2.Response(404, request=request), body=None)
+
+
 def auth_error() -> anthropic.AuthenticationError:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     return anthropic.AuthenticationError("invalid x-api-key", response=httpx2.Response(401, request=request), body=None)
@@ -233,12 +238,17 @@ class _Batches:
         return SimpleNamespace(id=batch_id, processing_status="in_progress")
 
     def retrieve(self, batch_id):
+        self._owner.retrieved.append(batch_id)
+        if batch_id not in self._batches:
+            raise not_found_error()
         b = self._batches[batch_id]
         b["retrieves"] += 1
-        self._owner.retrieved.append(batch_id)
-        ended = b["retrieves"] > self._owner.batch_polls
+        polls, total = self._owner.batch_polls, len(b["results"])
+        ended = b["retrieves"] > polls
+        # как у API: до конца обработки succeeded/errored/… равны нулю, видно только processing
         kinds = [r.result.type for r in b["results"]] if ended else []
-        counts = SimpleNamespace(processing=0 if ended else len(b["results"]), succeeded=kinds.count("succeeded"),
+        processing = 0 if ended else total - total * b["retrieves"] // (polls + 1)
+        counts = SimpleNamespace(processing=processing, succeeded=kinds.count("succeeded"),
                                  errored=kinds.count("errored"), canceled=0, expired=kinds.count("expired"))
         return SimpleNamespace(id=batch_id, processing_status="ended" if ended else "in_progress",
                                request_counts=counts)
