@@ -61,7 +61,7 @@ def _judge_reply(kw, pause=0.0):
     if pause:
         threading.Event().wait(pause)  # настоящая пауза: time.sleep в части тестов подменён
     return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=7, interesting=False,
-                                                      reason="r", crop_feed="", crop_stories="")
+                                                      reason="r")
                                             for i in ids_in(kw["messages"][0]["content"])]))
 
 
@@ -175,14 +175,14 @@ def _compose_reply(pause=0.0):
         if pause:
             threading.Event().wait(pause)
         return fake_response(ComposeOutput(carousels=[ComposeCarousel(title="Сфинкс", slides=[
-            ComposeSlide(id="c01", alternatives=[])])], stories=[]))
+            ComposeSlide(id="c01", alternatives=[], crop="")])], stories=[]))
     return handler
 
 
 def test_compose_logs_request_wait_and_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(transport, "WAIT_NOTICE_S", 0.02)
     cache, cands = Cache(tmp_path / "c.sqlite"), _assets(3)
-    facts = {a.uuid: ShotFacts(8, False, "r", "", "") for a in cands}
+    facts = {a.uuid: ShotFacts(8, False, "r") for a in cands}
     runner = ComposeRunner(HAIKU, "low", _preview)
     logs: list[str] = []
     compose_one(FakeClient(_compose_reply(pause=0.2)), runner, cache, THEME, cands, facts, AppConfig(), "album-1",
@@ -198,7 +198,7 @@ def test_compose_logs_request_wait_and_answer(tmp_path, monkeypatch):
 
 def test_compose_request_error_is_compose_failure(tmp_path):
     cands = _assets(2)
-    facts = {a.uuid: ShotFacts(8, False, "r", "", "") for a in cands}
+    facts = {a.uuid: ShotFacts(8, False, "r") for a in cands}
     runner = ComposeRunner(HAIKU, "low", _preview)
     outcome = compose_one(FakeClient(lambda n, kw: api_error()), runner, Cache(tmp_path / "c.sqlite"), THEME, cands,
                           facts, AppConfig(), "album-1")

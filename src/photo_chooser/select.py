@@ -60,6 +60,7 @@ def _local_reason(f: LocalFeatures | None, sharp_rank: float) -> str:
 class Slide:
     asset: Asset
     alternatives: list[Asset] = field(default_factory=list)
+    crop: str = ""  # совет по кадрированию до 4:5 от сборки; пусто у вертикальных кадров (SPEC D10)
 
 
 @dataclass
@@ -73,6 +74,7 @@ class StoryPick:
     asset: Asset
     kind: str  # "best" | "interesting"
     hint: str  # что пояснить в тексте; у "best" пусто
+    crop: str = ""  # совет по кадрированию до 9:16 от сборки; пусто у вертикальных кадров
 
 
 @dataclass
@@ -83,13 +85,11 @@ class Posts:
 
 @dataclass(frozen=True)
 class ShotFacts:
-    """Что отчёт и сборка знают о кадре: сила, пометка «интересное», причина и советы по кадрированию."""
+    """Что отчёт и сборка знают о кадре: сила, пометка «интересное» и причина."""
 
     score: float
     interesting: bool
     reason: str
-    crop_feed: str
-    crop_stories: str
 
 
 def compose_window(cloud: CloudCfg, posts: PostsCfg) -> tuple[int, int]:
@@ -106,6 +106,11 @@ def compose_candidates(cands: list[Asset], judgments: dict[str, Judgment], quali
     ranked = sorted(fit, key=lambda a: (judgments[a.uuid].score, quality.get(a.uuid, 0.0)), reverse=True)
     extra = [a for a in ranked[limit:] if judgments[a.uuid].interesting][:extra_interesting]
     return ranked[:limit] + extra
+
+
+def _crop(a: Asset, advice: str) -> str:
+    """Совет сборки по кадрированию; вертикальный кадр кадрировать не нужно (SPEC D10)."""
+    return "" if a.is_vertical else advice.strip()
 
 
 def _chronological(stories: list[StoryPick]) -> list[StoryPick]:
@@ -142,13 +147,13 @@ def validate_composition(out: "ComposeOutput", ids: dict[str, Asset], limits: Po
                 break
             a = take(raw_slide.id)
             if a is not None:
-                slides.append((a, raw_slide.alternatives))
+                slides.append((a, raw_slide.alternatives, _crop(a, raw_slide.crop)))
         if slides:
             planned.append((raw.title.strip() or f"Карусель {len(planned) + 1}", slides))
     carousels: list[Carousel] = []
     for title, slides in planned:
         built: list[Slide] = []
-        for a, raw_alternatives in slides:
+        for a, raw_alternatives, crop in slides:
             alternatives: list[Asset] = []
             for raw_id in raw_alternatives:
                 if len(alternatives) >= MAX_ALTERNATIVES:
@@ -156,7 +161,7 @@ def validate_composition(out: "ComposeOutput", ids: dict[str, Asset], limits: Po
                 alt = take(raw_id)
                 if alt is not None:
                     alternatives.append(alt)
-            built.append(Slide(a, alternatives))
+            built.append(Slide(a, alternatives, crop))
         carousels.append(Carousel(title, built))
     stories: list[StoryPick] = []
     for raw in out.stories:
@@ -164,7 +169,8 @@ def validate_composition(out: "ComposeOutput", ids: dict[str, Asset], limits: Po
             break
         a = take(raw.id)
         if a is not None:
-            stories.append(StoryPick(a, raw.kind, raw.hint.strip() if raw.kind == "interesting" else ""))
+            stories.append(StoryPick(a, raw.kind, raw.hint.strip() if raw.kind == "interesting" else "",
+                                     _crop(a, raw.crop)))
     return Posts(carousels, _chronological(stories))
 
 
@@ -191,12 +197,12 @@ def local_posts(cands: list[Asset], quality: dict[str, float], feats: dict[str, 
 
 
 def shot_facts(judgments: dict[str, Judgment]) -> dict[str, ShotFacts]:
-    return {u: ShotFacts(j.score, j.interesting, j.reason, j.crop_feed, j.crop_stories) for u, j in judgments.items()}
+    return {u: ShotFacts(j.score, j.interesting, j.reason) for u, j in judgments.items()}
 
 
 def local_facts(cands: list[Asset], quality: dict[str, float],
                 feats: dict[str, LocalFeatures]) -> dict[str, ShotFacts]:
     ranks = dict(zip((a.uuid for a in cands),
                      percentile_ranks([feats[a.uuid].sharpness if a.uuid in feats else 0.0 for a in cands])))
-    return {a.uuid: ShotFacts(quality.get(a.uuid, 0.0), False, _local_reason(feats.get(a.uuid), ranks[a.uuid]), "", "")
+    return {a.uuid: ShotFacts(quality.get(a.uuid, 0.0), False, _local_reason(feats.get(a.uuid), ranks[a.uuid]))
             for a in cands}

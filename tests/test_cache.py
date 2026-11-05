@@ -88,7 +88,6 @@ def test_composition_roundtrip(tmp_path):
 
 def test_judgment_roundtrip_with_interesting(tmp_path):
     c = Cache(tmp_path / "c.sqlite")
-    j = Judgment(uuid="A", matches_theme=True, score=6, reason="Роспись гробницы", interesting=True,
-                 crop_feed="", crop_stories="центр")
+    j = Judgment(uuid="A", matches_theme=True, score=6, reason="Роспись гробницы", interesting=True)
     c.put_judgments([j], "t1", "m", "judge-6")
     assert c.get_judgment("A", "t1", "m", "judge-6") == j
