@@ -59,7 +59,7 @@ def _live_frame(library: PhotosLibrary, asset: Asset, original: Path, tmp: Path,
     frames = live.sample_frames(video, live.LIVE_FRAMES_PER_VIDEO)
     if not frames:
         return None
-    side = cfg.cloud.preview_long_side_px
+    side = cfg.cloud.screen.preview_px
     scores = live.frame_scores([images.load_cgimage(original, side)] + frames, side)
     idx = live.choose(scores[0], scores[1:], cfg.thresholds.live_frame_margin)
     return frames[idx] if idx is not None else None

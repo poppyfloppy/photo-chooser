@@ -124,12 +124,12 @@ def test_app_config_defaults_when_file_missing(tmp_path):
     cfg = load_app_config(tmp_path / "nope.yaml")
     assert (cfg.posts.carousels, cfg.posts.carousel_size, cfg.posts.stories) == (1, 5, 9)
     assert cfg.cloud.compose_candidates == 30
-    assert cfg.cloud.screen_model == "claude-haiku-5-5" and cfg.cloud.model == "claude-haiku-5-5"
+    assert cfg.cloud.screen.model == "claude-haiku-5-5" and cfg.cloud.judge.model == "claude-haiku-5-5"
     assert cfg.cloud.max_cost_usd_per_album == 5.0
     assert cfg.cloud.pricing["claude-opus-5-5"].output == 20.00
     assert cfg.cloud.candidates_per_theme == 100
     assert cfg.cloud.group_size == 20
-    assert cfg.cloud.preview_long_side_px == 1024
+    assert (cfg.cloud.screen.preview_px, cfg.cloud.judge.preview_px) == (1024, 768)
     assert cfg.thresholds.duplicate_distance == 0.45
     assert cfg.thresholds.min_theme_relevance == 5
     assert "~" not in str(cfg.output_dir)
@@ -263,3 +263,31 @@ def test_posts_defaults_one_carousel_of_five():
     from photo_chooser.config import PostsCfg
 
     assert PostsCfg() == PostsCfg(carousels=1, carousel_size=5, stories=9)
+
+
+# --- настройки ступеней (FR-8, D18) ----------------------------------------------------------------
+
+def test_stage_defaults():
+    from photo_chooser.config import CloudCfg, ScreenCfg
+
+    assert CloudCfg().screen == ScreenCfg(model="claude-haiku-5-5", effort="medium", preview_px=1024)
+    assert (CloudCfg().judge.model, CloudCfg().judge.effort, CloudCfg().judge.preview_px) == \
+        ("claude-haiku-5-5", "high", 768)
+
+
+def test_partial_judge_section_keeps_judge_defaults(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("cloud:\n  judge: {model: claude-opus-5-5}\n", encoding="utf-8")
+    judge = load_app_config(path).cloud.judge
+    assert (judge.model, judge.effort, judge.preview_px) == ("claude-opus-5-5", "high", 768)
+
+
+def test_old_flat_keys_rejected_with_snippet(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("cloud:\n  model: claude-opus-5-5\n  effort: medium\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_app_config(path)
+    text = str(e.value)
+    assert "заменены секциями cloud.screen и cloud.judge (версия 0.5.1)" in text
+    assert "judge: {model: claude-opus-5-5, effort: high, preview_px: 768}" in text
+    assert "screen: {model: claude-haiku-5-5, effort: medium, preview_px: 1024}" in text

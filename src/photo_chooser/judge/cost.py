@@ -3,7 +3,7 @@
 import math
 from dataclasses import dataclass
 
-from photo_chooser.config import CloudCfg, Price
+from photo_chooser.config import CloudCfg, JudgeCfg, Price, ScreenCfg
 
 IMAGE_TOKEN_DIVISOR = 750
 PROMPT_OVERHEAD_TOKENS = 500  # на группу: системный промпт, id, список тем
@@ -71,33 +71,34 @@ def group_input_tokens(sizes: list[tuple[int, int]], long_side: int) -> int:
     return sum(image_tokens(w, h, long_side) for w, h in sizes) + PROMPT_OVERHEAD_TOKENS
 
 
-def _stage_usd(n: int, cfg: CloudCfg, output_per_photo: int, price: Price, extra_per_group: int = 0) -> float:
+def _stage_usd(n: int, side: int, cfg: CloudCfg, output_per_photo: int, price: Price,
+               extra_per_group: int = 0) -> float:
     if n <= 0:
         return 0.0
-    side = cfg.preview_long_side_px
     per_image = image_tokens(side, side * 3 // 4, side)
     groups = math.ceil(n / cfg.group_size)
     return usage_usd(TokenUsage(input=n * per_image + groups * (PROMPT_OVERHEAD_TOKENS + extra_per_group),
                                 output=n * output_per_photo), price)
 
 
-def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_model: str, judge_model: str,
+def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen: ScreenCfg, judge: JudgeCfg,
                      judge_extra_tokens: int = 0, n_compose: list[int] | None = None) -> float:
-    """Первая ступень — один проход по n_screen снимкам; вторая — n_judge[i] кандидатов темы i. Превью 4:3.
+    """Первая ступень — один проход по n_screen снимкам; вторая — n_judge[i] кандидатов темы i. Превью 4:3,
+    картинки каждой ступени — по её preview_px (D18).
     judge_extra_tokens — профиль стиля и скриншоты-образцы в каждой группе второй ступени (FR-11.6).
     Кэш мета-блока не учитывается: попадание в него не гарантировано, оценка чуть выше факта (FR-9.1)."""
-    screen = _stage_usd(n_screen, cfg, EST_OUTPUT_TOKENS_SCREEN, price_for(cfg, screen_model)) if n_screen else 0.0
+    screen_usd = _stage_usd(n_screen, screen.preview_px, cfg, EST_OUTPUT_TOKENS_SCREEN, price_for(cfg, screen.model)) if n_screen else 0.0
     rest = 0.0
     if any(n > 0 for n in n_judge):
-        judge_price = price_for(cfg, judge_model)
-        rest += sum(_stage_usd(n, cfg, EST_OUTPUT_TOKENS_JUDGE, judge_price, judge_extra_tokens) for n in n_judge)
+        judge_price = price_for(cfg, judge.model)
+        rest += sum(_stage_usd(n, judge.preview_px, cfg, EST_OUTPUT_TOKENS_JUDGE, judge_price, judge_extra_tokens) for n in n_judge)
     if any(n > 0 for n in n_compose or []):
-        judge_price = price_for(cfg, judge_model)
-        side = cfg.preview_long_side_px
+        judge_price = price_for(cfg, judge.model)
+        side = judge.preview_px
         per_image = image_tokens(side, side * 3 // 4, side) + COMPOSE_LABEL_TOKENS
         rest += sum(usage_usd(TokenUsage(input=n * per_image + PROMPT_OVERHEAD_TOKENS + judge_extra_tokens,
                                          output=EST_OUTPUT_TOKENS_COMPOSE), judge_price) for n in n_compose if n > 0)
-    return screen + rest
+    return screen_usd + rest
 
 
 def check_budget(spent: float, estimate: float, limit: float) -> None:

@@ -154,7 +154,7 @@ def style_command(
             raise typer.Exit(EXIT_ERROR)
         client = make_client()
         check_credentials(client)
-        profile = style.build_profile(client, cfg.style.model, cfg.cloud.effort, samples)
+        profile = style.build_profile(client, cfg.style.model, cfg.cloud.judge.effort, samples)
         style.save_profile(STYLE_PATH, profile.text)
         usd = usage_usd(TokenUsage(input=profile.input_tokens, output=profile.output_tokens),
                         price_for(cfg.cloud, cfg.style.model))

@@ -191,12 +191,12 @@ def _parse_group(response, uuids: list[str], output_model: type[BaseModel], conv
     return GroupResult(items=items, unjudged=[u for u in uuids if u not in seen], refused=False, usage=usage)
 
 
-def _check_group_price(groups: list[list[Asset]], cfg: CloudCfg, extra_tokens: int = 0) -> None:
+def _check_group_price(groups: list[list[Asset]], long_side: int, extra_tokens: int = 0) -> None:
     for g in groups:
-        tokens = group_input_tokens([(a.width, a.height) for a in g], cfg.preview_long_side_px) + extra_tokens
+        tokens = group_input_tokens([(a.width, a.height) for a in g], long_side) + extra_tokens
         if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
             raise ValueError(f"Группа из {len(g)} превью ≈ {tokens} входных токенов — больше ценового порога "
-                             f"{HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.group_size или preview_long_side_px.")
+                             f"{HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.group_size или preview_px ступени.")
 
 
 def _merge(outcome: StageOutcome, result: GroupResult, usd: float, lock: threading.Lock) -> None:
@@ -313,7 +313,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
     groups = [todo[i:i + cfg.group_size] for i in range(0, len(todo), cfg.group_size)]
     log(f"Первая ступень ({runner.model}): {len(assets)} снимков, из кэша {len(cached)}, групп {len(groups)}")
     price = price_for(cfg, runner.model)
-    _check_group_price(groups, cfg)
+    _check_group_price(groups, cfg.screen.preview_px)
     outcome = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0, from_cache=len(cached))
     lock = threading.Lock()
 
@@ -368,7 +368,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
                 cached[a.uuid] = j
         groups = make_groups(todo, t.order, cfg.group_size)
         log(f"  «{t.theme.name}»: кандидатов {len(t.assets)}, из кэша {len(cached)}, групп {len(groups)}")
-        _check_group_price(groups, cfg, runner.extra_input_tokens)
+        _check_group_price(groups, cfg.judge.preview_px, runner.extra_input_tokens)
         outcome = outcomes[key] = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0,
                                                from_cache=len(cached))
         jobs += [job(key, t.theme, n, g, outcome) for n, g in enumerate(groups, 1)]
@@ -510,7 +510,7 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
             posts = validate_composition(ComposeOutput.model_validate_json(cached), ids, cfg.posts)
             outcomes[key] = ComposeOutcome(posts=posts, usd=0.0, from_cache=True, refused=False)
             continue
-        tokens = (group_input_tokens([(a.width, a.height) for a in t.cands], cfg.cloud.preview_long_side_px)
+        tokens = (group_input_tokens([(a.width, a.height) for a in t.cands], cfg.cloud.judge.preview_px)
                   + COMPOSE_LABEL_TOKENS * len(t.cands) + (runner.style.extra_tokens if runner.style else 0))
         if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
             raise ValueError(f"Запрос сборки из {len(t.cands)} превью ≈ {tokens} входных токенов — больше ценового "

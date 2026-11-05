@@ -147,23 +147,51 @@ class PostsCfg(_Strict):
     stories: int = Field(default=9, ge=0)
 
 
-class CloudCfg(_Strict):
-    screen_model: str = "claude-haiku-5-5"
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+FLAT_STAGE_KEYS = ("screen_model", "model", "effort", "preview_long_side_px")  # до версии 0.5.1
+
+
+class ScreenCfg(_Strict):
+    """Первая ступень — отбор (FR-3 п.5); на её превью считаются и локальные признаки (FR-3 п.2)."""
+
     model: str = "claude-haiku-5-5"
-    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    effort: Effort = "medium"
+    preview_px: int = Field(default=1024, ge=64)
+
+
+class JudgeCfg(_Strict):
+    """Вторая ступень и сборка постов (FR-3 п.8, FR-4.2): то же превью, уменьшенное до preview_px (D18)."""
+
+    model: str = "claude-haiku-5-5"  # на время отладки, прод-модель фиксируется по §12
+    effort: Effort = "high"
+    preview_px: int = Field(default=768, ge=64)
+
+
+class CloudCfg(_Strict):
+    screen: ScreenCfg = Field(default_factory=ScreenCfg)
+    judge: JudgeCfg = Field(default_factory=JudgeCfg)
     pricing: dict[str, Price] = Field(default_factory=lambda: dict(DEFAULT_PRICING))
     max_cost_usd_per_album: float = Field(default=5.0, ge=0)
     candidates_per_theme: int = Field(default=100, ge=1)
-    preview_long_side_px: int = Field(default=1024, ge=64)
     group_size: int = Field(default=20, ge=1)
     compose_candidates: int = Field(default=30, ge=1)  # сильнейших кадров темы в запросе сборки (FR-4.1)
 
     @model_validator(mode="before")
     @classmethod
     def _removed_keys(cls, data):
-        if isinstance(data, dict) and "batch" in data:
+        if not isinstance(data, dict):
+            return data
+        if "batch" in data:
             raise ConfigError("cloud.batch удалён в версии 0.5.1: пакетного режима больше нет (SPEC D16) — уберите "
                               "ключ из config.yaml")
+        if any(k in data for k in FLAT_STAGE_KEYS):
+            screen = data.get("screen_model", ScreenCfg().model)
+            judge = data.get("model", JudgeCfg().model)
+            raise ConfigError(
+                "cloud.screen_model, cloud.model, cloud.effort и cloud.preview_long_side_px заменены секциями "
+                "cloud.screen и cloud.judge (версия 0.5.1). Замените их в config.yaml, например:\n"
+                f"cloud:\n  screen: {{model: {screen}, effort: medium, preview_px: 1024}}\n"
+                f"  judge: {{model: {judge}, effort: high, preview_px: 768}}")
         return data
 
     @field_validator("pricing", mode="before")

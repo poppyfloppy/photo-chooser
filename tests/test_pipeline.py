@@ -639,3 +639,34 @@ def test_dry_run_estimate_includes_interesting_window(tmp_path):
     small, _ = _run(album, _trip(GIZA), no_extra, Cache(tmp_path / "a.sqlite"), dry_run=True)
     large, _ = _run(album, _trip(GIZA), with_extra, Cache(tmp_path / "b.sqlite"), dry_run=True)
     assert large.estimate_usd > small.estimate_usd
+
+
+# --- настройки ступеней (D18) ----------------------------------------------------------------------
+
+def _long_sides(call) -> set[int]:
+    import base64
+    import io
+
+    from PIL import Image
+
+    return {max(Image.open(io.BytesIO(base64.b64decode(b["source"]["data"]))).size)
+            for b in call["messages"][0]["content"] if b["type"] == "image"}
+
+
+def test_judge_and_compose_get_judge_sized_previews(tmp_path):
+    from photo_chooser.config import CloudCfg, JudgeCfg, ScreenCfg
+
+    album = Album(tmp_path, n=5)
+    cfg = AppConfig(output_dir=tmp_path / "out", posts=PostsCfg(carousel_size=3, stories=5),
+                    cloud=CloudCfg(screen=ScreenCfg(preview_px=320), judge=JudgeCfg(preview_px=160)))
+    _, client = _run(album, _trip(GIZA), cfg, Cache(tmp_path / "c.sqlite"))
+    assert {s for c in client.calls_for(ScreenOutput) for s in _long_sides(c)} == {320}
+    assert {s for c in client.calls_for(JudgeOutput) + client.calls_for(ComposeOutput) for s in _long_sides(c)} == {160}
+
+
+def test_model_flag_overrides_judge_model(tmp_path):
+    album = Album(tmp_path, n=5)
+    _, client = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), model="claude-sonnet-5-5")
+    assert {c["model"] for c in client.calls_for(ScreenOutput)} == {"claude-haiku-5-5"}
+    assert {c["model"] for c in client.calls_for(JudgeOutput) + client.calls_for(ComposeOutput)} == \
+        {"claude-sonnet-5-5"}

@@ -13,7 +13,7 @@ from photo_chooser.analysis.dedup import cluster, representatives
 from photo_chooser.analysis.junk import junk_reason
 from photo_chooser.analysis.quality import compute_features, local_quality, percentile_ranks
 from photo_chooser.cache import Cache
-from photo_chooser.config import AppConfig, Theme, TripConfig, themes_key
+from photo_chooser.config import AppConfig, JudgeCfg, ScreenCfg, Theme, TripConfig, themes_key
 from photo_chooser.export import ExportedPosts, ensure_outside_library, export_posts, new_run_dir, safe_name
 from photo_chooser.judge.cost import TokenUsage, check_budget, estimate_run_usd, price_for
 from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION, SCREEN_PROMPT_VERSION
@@ -33,7 +33,7 @@ from photo_chooser.judge.stages import (
 from photo_chooser.judge.transport import SyncTransport, check_credentials
 from photo_chooser.library.base import PhotosLibrary
 from photo_chooser.models import AlbumRef, Asset, LocalFeatures, Screening
-from photo_chooser.report import ReportHeader, ThemeStats, write_report
+from photo_chooser.report import ReportHeader, ThemeStats, stage_line, write_report
 from photo_chooser.select import (
     Posts,
     compose_candidates,
@@ -116,7 +116,7 @@ def _no_log(message: str) -> None:
 
 def prepare_album(library: PhotosLibrary, cache: Cache, album: AlbumRef, cfg: AppConfig,
                   log: Callable[[str], None] = _no_log) -> AlbumState:
-    long_side = cfg.cloud.preview_long_side_px
+    long_side = cfg.cloud.screen.preview_px
     assets = sorted(library.assets(album), key=lambda a: a.taken_at)
     previews: dict[str, Path] = {}
     features: dict[str, LocalFeatures] = {}
@@ -157,8 +157,9 @@ def _screen_scope(trip: TripConfig, theme_assets: dict[str, list[Asset]], pool: 
 
 
 def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets: dict[str, list[Asset]],
-              screen_scope: list[Asset], cache: Cache, screen_model: str, judge_model: str,
+              screen_scope: list[Asset], cache: Cache, screen_cfg: ScreenCfg, judge_cfg: JudgeCfg,
               style: StyleContext | None) -> float:
+    screen_model, judge_model = screen_cfg.model, judge_cfg.model
     price_for(cfg.cloud, screen_model)
     price_for(cfg.cloud, judge_model)
     key = themes_key(state.album.title, trip.query_themes)
@@ -190,7 +191,7 @@ def _estimate(trip: TripConfig, cfg: AppConfig, state: AlbumState, theme_assets:
         fingerprint = compose_input_fingerprint(comp, shot_facts(judged), cfg.posts, style)
         cached = comp and cache.get_composition(t.key(), judge_model, COMPOSE_PROMPT_VERSION, fingerprint) is not None
         n_compose.append(0 if cached else len(comp))
-    return estimate_run_usd(n_screen, n_judge, cfg.cloud, screen_model, judge_model,
+    return estimate_run_usd(n_screen, n_judge, cfg.cloud, screen_cfg, judge_cfg,
                             judge_extra_tokens=style.extra_tokens if style else 0, n_compose=n_compose)
 
 
@@ -220,7 +221,9 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
     state = prepare_album(library, cache, album, cfg, log)
     theme_assets = {t.key(): [a for a in state.pool if in_interval(a, t, trip.tz)] for t in trip.themes}
     counts = {t.name: len(theme_assets[t.key()]) for t in trip.themes}
-    screen_model, judge_model = cfg.cloud.screen_model, opts.model or cfg.cloud.model
+    screen_cfg = cfg.cloud.screen
+    judge_cfg = cfg.cloud.judge.model_copy(update={"model": opts.model}) if opts.model else cfg.cloud.judge
+    screen_model, judge_model = screen_cfg.model, judge_cfg.model
     screen_scope = _screen_scope(trip, theme_assets, state.pool)
 
     style: StyleContext | None = None
@@ -231,24 +234,24 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
 
     estimate = 0.0
     if not opts.no_cloud:
-        estimate = _estimate(trip, cfg, state, theme_assets, screen_scope, cache, screen_model, judge_model,
-                             style)
+        estimate = _estimate(trip, cfg, state, theme_assets, screen_scope, cache, screen_cfg, judge_cfg, style)
         limit = opts.max_cost if opts.max_cost is not None else cfg.cloud.max_cost_usd_per_album
         check_budget(cache.album_spend(album.uuid), estimate, limit)
     if opts.dry_run:
         return RunResult(run_dir=None, themes=[ThemeOutcome(t, None, None, None) for t in trip.themes],
                          estimate_usd=estimate, theme_counts=counts, album_spend_usd=cache.album_spend(album.uuid))
 
-    long_side = cfg.cloud.preview_long_side_px
+    def screen_preview(a: Asset) -> bytes:
+        return images.jpeg_bytes(state.previews[a.uuid], screen_cfg.preview_px)
 
-    def preview(a: Asset) -> bytes:
-        return images.jpeg_bytes(state.previews[a.uuid], long_side)
+    def judge_preview(a: Asset) -> bytes:  # то же превью, уменьшенное для второй ступени и сборки (D18)
+        return images.jpeg_bytes(state.previews[a.uuid], judge_cfg.preview_px)
 
     screenings: dict[str, Screening] = {}
     screen: StageOutcome | None = None
     transport = SyncTransport(client, notify=log) if client is not None else None
     if not opts.no_cloud and trip.query_themes and screen_scope:
-        runner = ScreenRunner(screen_model, cfg.cloud.effort, preview)
+        runner = ScreenRunner(screen_model, screen_cfg.effort, screen_preview)
         # Ошибка здесь останавливает запуск: без первой ступени темы с query не обработать.
         screen = run_screen(runner, transport, cache, album.title, album.uuid, trip.query_themes, screen_scope,
                             cfg.cloud, log=log)
@@ -275,7 +278,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
     # Вторая ступень всех тем, затем сборка всех тем (FR-3, «Порядок этапов»)
     cloud = [w for w in works if not opts.no_cloud and w.cands]
     if cloud:
-        judge_runner = JudgeRunner(judge_model, cfg.cloud.effort, preview, style=style)
+        judge_runner = JudgeRunner(judge_model, judge_cfg.effort, judge_preview, style=style)
         tasks = [JudgeTask(w.theme, w.cands, {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0)
                                               / 10 for a in w.cands}) for w in cloud]
         judged = run_judge(judge_runner, transport, cache, tasks, cfg.cloud, album.uuid, log=log)
@@ -294,7 +297,7 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             if w.comp:
                 to_compose.append(w)
         if to_compose:
-            compose_runner = ComposeRunner(judge_model, cfg.cloud.effort, preview, style=style)
+            compose_runner = ComposeRunner(judge_model, judge_cfg.effort, judge_preview, style=style)
             composed = run_compose(compose_runner, transport, cache,
                                    [ComposeTask(w.theme, w.comp, w.facts) for w in to_compose], cfg, album.uuid, log)
             for w in to_compose:
@@ -325,9 +328,9 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             exported = export_posts(library, w.posts, theme_dir, Path(tmp), cfg)
             cached = (judge.usage if judge else TokenUsage()) + w.compose_usage
             header = ReportHeader(
-                screen_model=None if opts.no_cloud or screen is None else screen_model,
-                model=None if opts.no_cloud else judge_model,
-                effort=None if opts.no_cloud else cfg.cloud.effort,
+                screen_stage=(None if opts.no_cloud or screen is None else
+                              stage_line(screen_model, screen_cfg.effort, screen_cfg.preview_px)),
+                judge_stage=None if opts.no_cloud else stage_line(judge_model, judge_cfg.effort, judge_cfg.preview_px),
                 prompt_versions=(None if opts.no_cloud else
                                  f"{SCREEN_PROMPT_VERSION}, {judge_prompt_version(style)}, {COMPOSE_PROMPT_VERSION}"),
                 run_at=now, warnings=w.warnings, album=album.title,

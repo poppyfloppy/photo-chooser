@@ -21,7 +21,7 @@ from fakes import (
     system_text,
 )
 from photo_chooser.cache import Cache
-from photo_chooser.config import CloudCfg, Theme, themes_key
+from photo_chooser.config import CloudCfg, JudgeCfg, Theme, themes_key
 from photo_chooser.judge import transport
 from photo_chooser.judge.cost import TokenUsage, usage_usd
 from photo_chooser.judge.prompts import (
@@ -304,7 +304,7 @@ def test_opus_and_sonnet_use_server_side_fallbacks(model):
 
 def test_group_over_haiku_price_threshold_rejected(tmp_path):
     client = FakeClient(judge_handler())
-    cfg = CloudCfg(group_size=100)
+    cfg = CloudCfg(group_size=100, judge=JudgeCfg(preview_px=1024))  # пороги считались на превью 1024 px
     with pytest.raises(ValueError):
         judge_one(client, JudgeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEMES[0],
                   _assets(100), {}, cfg, "album-1")
@@ -439,7 +439,7 @@ def test_judge_without_style_unchanged():
 def test_style_tokens_count_toward_price_threshold(tmp_path):
     # 80 превью ≈ 84 тыс. токенов — меньше порога; со стилем на 20 тыс. — уже больше
     client = FakeClient(judge_handler())
-    cfg = CloudCfg(group_size=80)
+    cfg = CloudCfg(group_size=80, judge=JudgeCfg(preview_px=1024))
     judge_one(client, JudgeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "a.sqlite"), THEMES[0], _assets(80),
               {}, cfg, "album-1")
     from dataclasses import replace
