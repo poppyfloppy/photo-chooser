@@ -210,8 +210,12 @@ def _merge(outcome: StageOutcome, result: GroupResult, usd: float, lock: threadi
 
 
 class ScreenRunner:
-    def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes]):
-        self.model, self.effort, self.preview = model, effort, preview
+    def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes], preview_px: int = 1024):
+        self.model, self.effort, self.preview, self.preview_px = model, effort, preview, preview_px
+
+    @property
+    def version(self) -> str:
+        return cache_version(SCREEN_PROMPT_VERSION, self.effort, self.preview_px)
 
     def request(self, album_title: str, themes: list[Theme], group: list[Asset], custom_id: str) -> ModelRequest:
         listing = "\n".join(f"{n}. {theme_text(t)}" for n, t in enumerate(themes, 1))
@@ -254,19 +258,21 @@ def reference_content(style: "StyleContext | None") -> list[dict]:
     return content
 
 
-def judge_prompt_version(style: "StyleContext | None") -> str:
-    """Версия промпта второй ступени для ключа кэша: со стилем в неё входит отпечаток профиля (FR-9.3)."""
-    return JUDGE_PROMPT_VERSION if style is None else f"{JUDGE_PROMPT_VERSION}/style-{style.fingerprint}"
+def cache_version(base: str, effort: str, preview_px: int, style: "StyleContext | None" = None) -> str:
+    """Версия промпта для ключа кэша ступени (FR-9.3, D18): effort и размер превью меняют ответ модели, у второй
+    ступени — ещё отпечаток профиля стиля."""
+    return f"{base}/{effort}/{preview_px}px" + (f"/style-{style.fingerprint}" if style else "")
 
 
 class JudgeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, preview_px: int = 768):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.preview_px = preview_px
 
     @property
     def prompt_version(self) -> str:
-        return judge_prompt_version(self.style)
+        return cache_version(JUDGE_PROMPT_VERSION, self.effort, self.preview_px, self.style)
 
     @property
     def extra_input_tokens(self) -> int:
@@ -304,7 +310,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
     key = themes_key(album_title, themes)
     cached, todo = {}, []
     for a in assets:
-        s = cache.get_screening(a.uuid, key, runner.model, SCREEN_PROMPT_VERSION)
+        s = cache.get_screening(a.uuid, key, runner.model, runner.version)
         if s is None:
             todo.append(a)
         else:
@@ -322,7 +328,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
 
         def handle(response) -> None:
             result = runner.parse(response, themes, uuids)
-            cache.put_screenings(result.items, key, runner.model, SCREEN_PROMPT_VERSION)
+            cache.put_screenings(result.items, key, runner.model, runner.version)
             usd = usage_usd(result.usage, price)
             cache.add_spend(album_uuid, runner.model, usd)
             _merge(outcome, result, usd, lock)
@@ -411,8 +417,13 @@ def _compose_style_system(system: str, style: "StyleContext | None") -> str:
 
 class ComposeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, preview_px: int = 768):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.preview_px = preview_px
+
+    @property
+    def version(self) -> str:
+        return cache_version(COMPOSE_PROMPT_VERSION, self.effort, self.preview_px)
 
     def request(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
                 custom_id: str) -> ModelRequest:
@@ -485,7 +496,7 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
             usd = usage_usd(result.usage, price)
             cache.add_spend(album_uuid, runner.model, usd)
             if result.output is not None and _answer_known(result.output, ids):
-                cache.put_composition(key, runner.model, COMPOSE_PROMPT_VERSION, fingerprint,
+                cache.put_composition(key, runner.model, runner.version, fingerprint,
                                       result.output.model_dump_json())
             with lock:
                 answers[key] = (result, usd)
@@ -504,7 +515,7 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
             continue
         ids = {f"c{i:02d}": a for i, a in enumerate(t.cands, 1)}
         fingerprint = compose_input_fingerprint(t.cands, t.facts, cfg.posts, runner.style)
-        cached = cache.get_composition(key, runner.model, COMPOSE_PROMPT_VERSION, fingerprint)
+        cached = cache.get_composition(key, runner.model, runner.version, fingerprint)
         if cached is not None:
             log(f"  «{t.theme.name}»: сборка из кэша")
             posts = validate_composition(ComposeOutput.model_validate_json(cached), ids, cfg.posts)

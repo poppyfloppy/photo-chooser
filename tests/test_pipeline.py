@@ -204,7 +204,7 @@ def test_screen_runs_once_for_all_themes(tmp_path):
         assert outcome.error is None
         assert len(_feed_files(outcome.report_path.parent)) == 3
     report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}, {JUDGE_PROMPT_VERSION}" in report
+    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}/medium/1024px, {JUDGE_PROMPT_VERSION}/high/768px" in report
     spent = cache.album_spend("ALB")
     assert spent == pytest.approx(15 * (20_000 * 0.10 / 1e6 + 2_000 * 0.50 / 1e6))  # 3 + 9 + сборка по 3 темам
     last_report = result.themes[-1].report_path.read_text(encoding="utf-8")  # накоплено на момент отчёта
@@ -467,7 +467,7 @@ def test_run_with_style_sends_profile_and_marks_header(tmp_path):
     assert "Мягкий тёплый свет." not in client.calls_for(ScreenOutput)[0]["system"]
     report = result.themes[0].report_path.read_text(encoding="utf-8")
     assert "- Стиль: style.md от " in report and "скриншотов: лента 1, stories 0" in report
-    assert f"{JUDGE_PROMPT_VERSION}/style-" in report
+    assert f"{JUDGE_PROMPT_VERSION}/high/768px/style-" in report
 
 
 def test_run_without_profile_warns(tmp_path):
@@ -670,3 +670,37 @@ def test_model_flag_overrides_judge_model(tmp_path):
     assert {c["model"] for c in client.calls_for(ScreenOutput)} == {"claude-haiku-5-5"}
     assert {c["model"] for c in client.calls_for(JudgeOutput) + client.calls_for(ComposeOutput)} == \
         {"claude-sonnet-5-5"}
+
+
+def _stage_cfg(tmp_path, **cloud):
+    from photo_chooser.config import CloudCfg
+
+    return AppConfig(output_dir=tmp_path / "out", posts=PostsCfg(carousel_size=3, stories=5), cloud=CloudCfg(**cloud))
+
+
+def test_effort_change_recomputes_only_its_stage(tmp_path):
+    from photo_chooser.config import JudgeCfg
+
+    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
+    _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(effort="high")), cache)
+    _, again = _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(effort="medium")), cache)
+    assert again.calls_for(ScreenOutput) == []
+    assert again.calls_for(JudgeOutput) and again.calls_for(ComposeOutput)
+
+
+def test_preview_change_recomputes_judge(tmp_path):
+    from photo_chooser.config import JudgeCfg
+
+    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
+    _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(preview_px=160)), cache)
+    _, again = _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(preview_px=200)), cache)
+    assert again.calls_for(ScreenOutput) == [] and again.calls_for(JudgeOutput)
+
+
+def test_screen_effort_change_recomputes_screen(tmp_path):
+    from photo_chooser.config import ScreenCfg
+
+    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
+    _run(album, _trip(GIZA), _stage_cfg(tmp_path), cache)
+    _, again = _run(album, _trip(GIZA), _stage_cfg(tmp_path, screen=ScreenCfg(effort="low")), cache)
+    assert again.calls_for(ScreenOutput)
