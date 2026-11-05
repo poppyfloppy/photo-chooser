@@ -7,6 +7,7 @@ from fakes import FakeLibrary
 from imaging import blurred, save_jpeg, scene_image, write_mov
 from photo_chooser.config import AppConfig, ConfigError, Theme
 from photo_chooser.export import ensure_outside_library, export_posts, export_shot, new_run_dir, safe_name
+from photo_chooser.judge.cost import TokenUsage
 from photo_chooser.library.base import DownloadError
 from photo_chooser.models import AlbumRef
 from photo_chooser.report import ReportHeader, ThemeStats, write_report
@@ -120,20 +121,37 @@ def test_report_no_cloud_header_and_summary(tmp_path):
     assert "IMG_9.HEIC — нет превью" in text and "Недобор" not in text
 
 
-CACHE_LINE = "- Кэш мета-блока (вторая ступень и сборка): записано 4.5 тыс., прочитано 36.0 тыс. токенов"
+STAGE_LINES = [
+    "- Токены, тыс.: первая ступень — вход 12.3, выход 1.5 (общие на запуск); вторая ступень — вход 80.0, выход 9.0; "
+    "сборка — вход 30.0, выход 4.2",
+    "- Кэш мета-блока (вторая ступень и сборка): записано 4.5 тыс., прочитано 36.0 тыс. токенов",
+    "- Время запуска: первая ступень 2:05, вторая ступень 12:30, сборка 0:45 (общее на все темы)",
+]
 
 
-def test_report_cache_line(tmp_path):
-    cloud = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, medium, 768 px",
-                         prompt_versions="screen-4, judge-7, compose-5", run_at=NOW, album="Egypt.26")
+def _stage_stats():
+    return _stats(tokens_screen=TokenUsage(12_300, 1_500),
+                  tokens_judge=TokenUsage(80_000, 9_000, cache_write=4_500, cache_read=30_000),
+                  tokens_compose=TokenUsage(30_000, 4_200, cache_read=6_000),
+                  time_screen_s=125.4, time_judge_s=750.0, time_compose_s=45.2)
+
+
+def test_report_tokens_and_time_lines(tmp_path):
+    cloud = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, high, 768 px",
+                         prompt_versions="screen-4, judge-8, compose-6", run_at=NOW, album="Egypt.26")
     path = tmp_path / "report.md"
-    stats = _stats(cache_write_tokens=4500, cache_read_tokens=36000)
-    write_report(path, Theme(name="Гиза", query="пирамиды"), cloud, _empty_posts(tmp_path), {}, stats)
+    write_report(path, Theme(name="Гиза", query="пирамиды"), cloud, _empty_posts(tmp_path), {}, _stage_stats())
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines[lines.index(CACHE_LINE) - 1].startswith("- Стоимость:")
+    i = lines.index(STAGE_LINES[0])
+    assert lines[i - 1].startswith("- Стоимость:") and lines[i:i + 3] == STAGE_LINES
+
+
+def test_no_cloud_report_has_no_tokens_or_time(tmp_path):
     local = ReportHeader(screen_stage=None, judge_stage=None, prompt_versions=None, run_at=NOW)
-    write_report(path, Theme(name="Гиза", query="пирамиды"), local, _empty_posts(tmp_path), {}, stats)
-    assert "Кэш мета-блока" not in path.read_text(encoding="utf-8")
+    path = tmp_path / "report.md"
+    write_report(path, Theme(name="Гиза", query="пирамиды"), local, _empty_posts(tmp_path), {}, _stage_stats())
+    text = path.read_text(encoding="utf-8")
+    assert "Токены" not in text and "Кэш мета-блока" not in text and "Время запуска" not in text
 
 
 def test_report_cloud_header_and_style_line(tmp_path):

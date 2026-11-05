@@ -1,6 +1,7 @@
 """Оркестрация запуска: альбом → отсев → первая ступень → по каждой теме вторая ступень, раскладка, экспорт, отчёт."""
 
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -257,13 +258,16 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
 
     screenings: dict[str, Screening] = {}
     screen: StageOutcome | None = None
+    elapsed = {"screen": 0.0, "judge": 0.0, "compose": 0.0}  # время ступеней за запуск (FR-6.3)
     transport = SyncTransport(client, notify=log) if client is not None else None
     if not opts.no_cloud and trip.query_themes and screen_scope:
         runner = ScreenRunner(screen_model, screen_cfg.effort, screen_preview, preview_px=screen_cfg.preview_px)
         # Ошибка здесь останавливает запуск: без первой ступени темы с query не обработать.
+        started = time.monotonic()
         screen = run_screen(runner, transport, cache, album.title, album.uuid, trip.query_themes, screen_scope,
                             cfg.cloud, log=log)
         screenings = screen.results
+        elapsed["screen"] = time.monotonic() - started
 
     th = cfg.thresholds
     works = [_ThemeWork(t, theme_assets[t.key()], list(style_warnings)) for t in trip.themes]
@@ -290,7 +294,9 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                                    preview_px=judge_cfg.preview_px)
         tasks = [JudgeTask(w.theme, w.cands, {a.uuid: _draft(screenings.get(a.uuid)) + state.quality.get(a.uuid, 0.0)
                                               / 10 for a in w.cands}) for w in cloud]
+        started = time.monotonic()
         judged = run_judge(judge_runner, transport, cache, tasks, cfg.cloud, album.uuid, log=log)
+        elapsed["judge"] = time.monotonic() - started
         to_compose: list[_ThemeWork] = []
         for w in cloud:
             w.judge = judged[w.theme.key()]
@@ -308,8 +314,10 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
         if to_compose:
             compose_runner = ComposeRunner(judge_model, judge_cfg.effort, judge_preview, style=style,
                                            preview_px=judge_cfg.preview_px)
+            started = time.monotonic()
             composed = run_compose(compose_runner, transport, cache,
                                    [ComposeTask(w.theme, w.comp, w.facts) for w in to_compose], cfg, album.uuid, log)
+            elapsed["compose"] = time.monotonic() - started
             for w in to_compose:
                 c = composed[w.theme.key()]
                 w.posts, w.compose_usd, w.compose_usage = c.posts, c.usd, c.usage
@@ -336,7 +344,6 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
             if w.error is None:
                 log(f"  «{t.name}»: {_posts_line(w.posts)}")
             exported = export_posts(library, w.posts, theme_dir, Path(tmp), cfg)
-            cached = (judge.usage if judge else TokenUsage()) + w.compose_usage
             header = ReportHeader(
                 screen_stage=(None if opts.no_cloud or screen is None else
                               stage_line(screen_model, screen_cfg.effort, screen_cfg.preview_px)),
@@ -354,7 +361,9 @@ def run(trip: TripConfig, cfg: AppConfig, opts: RunOptions, library: PhotosLibra
                 usd_screen=screen.usd if screen else 0.0, usd_judge=judge.usd if judge else 0.0,
                 usd_album_total=cache.album_spend(album.uuid), skipped=skipped,
                 sent_to_compose=len(w.comp), usd_compose=w.compose_usd,
-                cache_write_tokens=cached.cache_write, cache_read_tokens=cached.cache_read)
+                tokens_screen=screen.usage if screen else TokenUsage(),
+                tokens_judge=judge.usage if judge else TokenUsage(), tokens_compose=w.compose_usage,
+                time_screen_s=elapsed["screen"], time_judge_s=elapsed["judge"], time_compose_s=elapsed["compose"])
             report_path = theme_dir / "report.md"
             write_report(report_path, t, header, exported, w.facts, stats)
             outcomes.append(ThemeOutcome(t, report_path, exported, w.error))

@@ -703,3 +703,25 @@ def test_screen_effort_change_recomputes_screen(tmp_path):
     _run(album, _trip(GIZA), _stage_cfg(tmp_path), cache)
     _, again = _run(album, _trip(GIZA), _stage_cfg(tmp_path, screen=ScreenCfg(effort="low")), cache)
     assert again.calls_for(ScreenOutput)
+
+
+def test_pipeline_fills_stage_tokens(tmp_path):
+    album = Album(tmp_path, n=5)
+    result, client = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"))
+    report = result.themes[0].report_path.read_text(encoding="utf-8")
+    k = len(client.calls_for(JudgeOutput))  # каждый ответ заглушки — 20 тыс. на входе и 2 тыс. на выходе
+    assert k > 0 and (f"вторая ступень — вход {20.0 * k:.1f}, выход {2.0 * k:.1f}; сборка — вход 20.0, выход 2.0"
+                      in report)
+    assert re.search(r"- Время запуска: первая ступень \d+:\d\d, вторая ступень \d+:\d\d, сборка \d+:\d\d", report)
+
+
+def test_cached_run_reports_zero_tokens(tmp_path):
+    album = Album(tmp_path, n=5)
+    cache, cfg = Cache(tmp_path / "c.sqlite"), _cfg(tmp_path)
+    _run(album, _trip(GIZA), cfg, cache)
+    result, client = _run(album, _trip(GIZA), cfg, cache)
+    report = result.themes[0].report_path.read_text(encoding="utf-8")
+    assert client.calls == []
+    assert ("- Токены, тыс.: первая ступень — вход 0.0, выход 0.0 (общие на запуск); вторая ступень — вход 0.0, "
+            "выход 0.0; сборка — вход 0.0, выход 0.0") in report
+    assert "- Время запуска: первая ступень 0:00, вторая ступень 0:00, сборка 0:00 (общее на все темы)" in report
