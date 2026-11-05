@@ -151,13 +151,20 @@ class CloudCfg(_Strict):
     screen_model: str = "claude-haiku-5-5"
     model: str = "claude-haiku-5-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
-    batch: bool = False  # пакетный режим второй ступени и сборки (FR-12); флаги --batch / --no-batch
     pricing: dict[str, Price] = Field(default_factory=lambda: dict(DEFAULT_PRICING))
     max_cost_usd_per_album: float = Field(default=5.0, ge=0)
     candidates_per_theme: int = Field(default=100, ge=1)
     preview_long_side_px: int = Field(default=1024, ge=64)
     group_size: int = Field(default=20, ge=1)
     compose_candidates: int = Field(default=30, ge=1)  # сильнейших кадров темы в запросе сборки (FR-4.1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _removed_keys(cls, data):
+        if isinstance(data, dict) and "batch" in data:
+            raise ConfigError("cloud.batch удалён в версии 0.5.1: пакетного режима больше нет (SPEC D16) — уберите "
+                              "ключ из config.yaml")
+        return data
 
     @field_validator("pricing", mode="before")
     @classmethod

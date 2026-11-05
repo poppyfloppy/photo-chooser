@@ -1,10 +1,10 @@
-"""SQLite-кэш: локальные признаки, оценки обеих облачных ступеней, сборки, пакеты и учёт расходов."""
+"""SQLite-кэш: локальные признаки, оценки обеих облачных ступеней, сборки и учёт расходов."""
 
 import json
 import sqlite3
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 from photo_chooser.models import Judgment, LocalFeatures, Screening
@@ -25,18 +25,8 @@ CREATE TABLE IF NOT EXISTS compositions (
     PRIMARY KEY (theme_key, model, prompt_version, input_fp));
 CREATE TABLE IF NOT EXISTS spend (album_uuid TEXT NOT NULL, model TEXT NOT NULL, usd REAL NOT NULL,
                                   created_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS batches (batch_id TEXT PRIMARY KEY, album_uuid TEXT NOT NULL, stage TEXT NOT NULL,
-    created_at REAL NOT NULL, collected INTEGER NOT NULL DEFAULT 0, jobs_json TEXT NOT NULL);
 """
 
-
-@dataclass
-class PendingBatch:
-    """Отправленный, но не забранный пакет (FR-12.4): metas по custom_id — чем записать ответы в кэш."""
-
-    batch_id: str
-    created_at: float
-    metas: dict[str, dict]
 
 
 class Cache:
@@ -101,19 +91,6 @@ class Cache:
 
     def add_spend(self, album_uuid: str, model: str, usd: float) -> None:
         self._write("INSERT INTO spend VALUES (?, ?, ?, ?)", [(album_uuid, model, usd, time.time())])
-
-    def add_batch(self, batch_id: str, album_uuid: str, stage: str, metas: dict[str, dict]) -> None:
-        self._write("INSERT INTO batches (batch_id, album_uuid, stage, created_at, jobs_json) VALUES (?, ?, ?, ?, ?)",
-                    [(batch_id, album_uuid, stage, time.time(), json.dumps(metas, ensure_ascii=False))])
-
-    def pending_batches(self, album_uuid: str, stage: str) -> list[PendingBatch]:
-        with self._lock:
-            rows = self._db.execute("SELECT batch_id, created_at, jobs_json FROM batches WHERE album_uuid = ? AND "
-                                    "stage = ? AND collected = 0 ORDER BY created_at", (album_uuid, stage)).fetchall()
-        return [PendingBatch(batch_id, created_at, json.loads(metas)) for batch_id, created_at, metas in rows]
-
-    def mark_batch_collected(self, batch_id: str) -> None:
-        self._write("UPDATE batches SET collected = 1 WHERE batch_id = ?", [(batch_id,)])
 
     def album_spend(self, album_uuid: str) -> float:
         row = self._read_one("SELECT COALESCE(SUM(usd), 0) FROM spend WHERE album_uuid = ?", (album_uuid,))

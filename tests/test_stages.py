@@ -37,12 +37,10 @@ from photo_chooser.judge.stages import (
     ScreenItem,
     ScreenMatch,
     ScreenOutput,
-    JudgeTask,
     ScreenRunner,
     make_groups,
-    run_judge,
 )
-from photo_chooser.judge.transport import ModelRequest, SyncTransport, call_model
+from photo_chooser.judge.transport import ModelRequest, call_model
 
 HAIKU = "claude-haiku-5-5"
 THEMES = [Theme(name="Пирамиды в Гиза", query="Пирамиды в Гиза"), Theme(name="GEM", query="Большой Египетский музей"),
@@ -600,25 +598,6 @@ def test_judge_prompt_harmonious_portrait():
         assert phrase in JUDGE_SYSTEM_PROMPT
 
 
-def test_judge_handler_from_meta_writes_cache_and_spend(tmp_path):
-    # обработчик строится только из meta — так пакетный режим заберёт ответ в следующем запуске (FR-12.4)
-    cache, assets = Cache(tmp_path / "c.sqlite"), _assets(2)
-    meta = {"theme_key": THEMES[0].key(), "model": HAIKU, "prompt_version": JUDGE_PROMPT_VERSION, "batch": False,
-            "shots": [[a.uuid, "horizontal"] for a in assets]}
-    answer = judge_handler()(1, {"messages": [{"content": [{"type": "text", "text": "id: p01 (horizontal)"},
-                                                           {"type": "text", "text": "id: p02 (horizontal)"}]}]})
-
-    class Resuming(SyncTransport):
-        def resume(self, stage, handler_for, log=None):
-            handler_for(meta)(answer)
-
-    client = FakeClient(judge_handler())
-    outcomes = run_judge(JudgeRunner(HAIKU, "medium", _preview), Resuming(client), cache,
-                         [JudgeTask(THEMES[0], assets, {})], CloudCfg(), "album-1")
-    assert outcomes[THEMES[0].key()].from_cache == 2 and client.calls == []
-    assert cache.album_spend("album-1") == pytest.approx(GROUP_USD)
-
-
 def test_judge_spend_includes_cache_tokens(tmp_path):
     cache = Cache(tmp_path / "c.sqlite")
     client = FakeClient(judge_handler(cache_write=4000, cache_read=40000))
@@ -637,7 +616,7 @@ def test_judge_request_marks_last_reference():
     images = [i for i, b in enumerate(req.content) if b["type"] == "image"]
     assert _marked(req.content) == [images[1]]  # последний скриншот-образец; превью кандидатов — после метки
     assert req.content[images[1]]["cache_control"] == {"type": "ephemeral"}
-    assert isinstance(req.system, str) and req.cache_ttl == "5m"
+    assert isinstance(req.system, str) and req.cached
 
 
 def test_judge_request_without_references_marks_system():
@@ -646,15 +625,9 @@ def test_judge_request_without_references_marks_system():
     assert _marked(req.content) == []
 
 
-def test_judge_request_1h_ttl():
-    req = JudgeRunner(HAIKU, "medium", _preview, style=_style(), cache_ttl="1h").request(THEMES[0], _assets(1), "j")
-    [i] = _marked(req.content)
-    assert req.content[i]["cache_control"] == {"type": "ephemeral", "ttl": "1h"} and req.cache_ttl == "1h"
-
-
 def test_screen_request_has_no_cache_control():
     req = ScreenRunner(HAIKU, "medium", _preview).request("Egypt.26", THEMES, _assets(2), "s-001")
-    assert _marked(req.content) == [] and isinstance(req.system, str) and req.cache_ttl is None
+    assert _marked(req.content) == [] and isinstance(req.system, str) and not req.cached
 
 
 def test_cache_does_not_change_cache_keys():

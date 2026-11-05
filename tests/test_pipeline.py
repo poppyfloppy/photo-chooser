@@ -9,7 +9,6 @@ import pytest
 
 from conftest import make_asset
 from fakes import (
-    EXPIRED,
     FakeClient,
     FakeLibrary,
     api_error,
@@ -640,86 +639,3 @@ def test_dry_run_estimate_includes_interesting_window(tmp_path):
     small, _ = _run(album, _trip(GIZA), no_extra, Cache(tmp_path / "a.sqlite"), dry_run=True)
     large, _ = _run(album, _trip(GIZA), with_extra, Cache(tmp_path / "b.sqlite"), dry_run=True)
     assert large.estimate_usd > small.estimate_usd
-
-
-# --- пакетный режим (FR-12) ----------------------------------------------------------------------
-
-@pytest.fixture
-def no_poll_sleep(monkeypatch):
-    from photo_chooser.judge import transport
-
-    monkeypatch.setattr(transport.time, "sleep", lambda s: None)
-
-
-GROUP_USD = (20_000 * 0.10 + 2_000 * 0.50) / 1e6  # usage fake_response на Haiku
-
-
-def test_batch_run_end_to_end(tmp_path, no_poll_sleep):
-    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
-    client = FakeClient(handler())
-    logs: list[str] = []
-    result = run(_trip(GIZA), _cfg(tmp_path), RunOptions(batch=True), album.library, cache, lambda: client, NOW,
-                 log=logs.append)
-    screen, judge, compose = (client.calls_for(m) for m in (ScreenOutput, JudgeOutput, ComposeOutput))
-    assert screen and not any(c.get("_batch") for c in screen)
-    assert judge and compose and all(c.get("_batch") for c in judge + compose)
-    assert client.created_batches == ["msgbatch_001", "msgbatch_002"]
-    assert judge[0]["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-    assert cache.album_spend("ALB") == pytest.approx(GROUP_USD + 0.5 * 2 * GROUP_USD)
-    assert "Вторая ступень (claude-haiku-5-5, пакет): тем 1" in logs
-    assert "Сборка постов (claude-haiku-5-5, пакет): тем 1" in logs
-    report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert "- Режим: пакетный (Message Batches, −50%)" in report
-
-
-def test_sync_report_mode_line(tmp_path):
-    result, _ = _run(Album(tmp_path, n=5), _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"))
-    assert "- Режим: синхронный" in result.themes[0].report_path.read_text(encoding="utf-8")
-
-
-def _expire(kind, theme=None):
-    ok = handler()
-
-    def h(n, kw):
-        if output_model_of(kw) is kind and (theme is None or f"«{theme}" in last_text(kw["messages"][0]["content"])):
-            return EXPIRED
-        return ok(n, kw)
-    return h
-
-
-def test_batch_theme_failure_marks_theme(tmp_path, no_poll_sleep):
-    album = Album(tmp_path, n=5)
-    client = FakeClient(_expire(JudgeOutput, theme="Гиза"))
-    result, _ = _run(album, _trip(GIZA, NILE), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), client, batch=True)
-    giza, nile = result.themes
-    assert giza.error.startswith("BatchRequestFailed: запрос пакета не выполнен (expired)") and nile.error is None
-    assert len(_feed_files(result.run_dir / "Нил")) == 3
-
-
-def test_batch_compose_expired_falls_back(tmp_path, no_poll_sleep):
-    album = Album(tmp_path, n=5)
-    result, _ = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"),
-                     FakeClient(_expire(ComposeOutput)), batch=True)
-    report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert ("Сборка не удалась — разложено по оценкам (BatchRequestFailed: запрос пакета не выполнен (expired))"
-            in report)
-
-
-def test_sync_rerun_collects_interrupted_batch(tmp_path, no_poll_sleep):
-    # FR-12.4: пакетный запуск прерван по Ctrl+C, повтор без --batch ждёт пакет, а не платит второй раз
-    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
-    client = FakeClient(handler())
-
-    def interrupt(line: str) -> None:
-        if "готово" in line:
-            raise KeyboardInterrupt
-
-    with pytest.raises(KeyboardInterrupt):
-        run(_trip(GIZA), _cfg(tmp_path), RunOptions(batch=True), album.library, cache, lambda: client, NOW,
-            log=interrupt)
-    logs: list[str] = []
-    run(_trip(GIZA), _cfg(tmp_path), RunOptions(), album.library, cache, lambda: client, NOW, log=logs.append)
-    judge = client.calls_for(JudgeOutput)
-    assert len(judge) == 1 and judge[0].get("_batch")  # группа оплачена один раз — в пакете
-    assert any(line.startswith("  незабранный пакет второй ступени msgbatch_001") for line in logs)
-    assert cache.album_spend("ALB") == pytest.approx(GROUP_USD + 0.5 * GROUP_USD + GROUP_USD)
