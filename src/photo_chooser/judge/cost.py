@@ -12,8 +12,7 @@ EST_OUTPUT_TOKENS_JUDGE = 80  # на снимок, с причиной
 EST_OUTPUT_TOKENS_COMPOSE = 1500  # на запрос сборки постов темы
 COMPOSE_LABEL_TOKENS = 60  # подпись кандидата сборки: id, ориентация, оценки, причина
 HAIKU_PRICE_LIMIT_TOKENS = 100_000  # цена Haiku 5.5 действует для запросов до 100K токенов
-CACHE_WRITE_MULTIPLIER = {"5m": 1.25, "1h": 2.0}  # запись кэша — доля цены входа по TTL (FR-9.2)
-BATCH_DISCOUNT = 0.5  # Message Batches: скидка на все токены, включая запись и чтение кэша (FR-12)
+CACHE_WRITE_MULTIPLIER = 1.25  # запись кэша с TTL 5 минут — доля цены входа (FR-9.2)
 
 
 @dataclass(frozen=True)
@@ -62,11 +61,10 @@ def price_for(cfg: CloudCfg, model: str) -> Price:
     return cfg.pricing[model]
 
 
-def usage_usd(u: TokenUsage, price: Price, *, cache_ttl: str = "5m", batch: bool = False) -> float:
-    """Стоимость по usage (FR-9.2): вход, запись кэша по TTL, чтение кэша, выход; в пакете — со скидкой."""
-    usd = (u.input * price.input + u.cache_write * price.input * CACHE_WRITE_MULTIPLIER[cache_ttl]
-           + u.cache_read * price.cache_read_price + u.output * price.output) / 1e6
-    return usd * BATCH_DISCOUNT if batch else usd
+def usage_usd(u: TokenUsage, price: Price) -> float:
+    """Стоимость по usage (FR-9.2): вход, запись и чтение кэша, выход."""
+    return (u.input * price.input + u.cache_write * price.input * CACHE_WRITE_MULTIPLIER
+            + u.cache_read * price.cache_read_price + u.output * price.output) / 1e6
 
 
 def group_input_tokens(sizes: list[tuple[int, int]], long_side: int) -> int:
@@ -84,11 +82,10 @@ def _stage_usd(n: int, cfg: CloudCfg, output_per_photo: int, price: Price, extra
 
 
 def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_model: str, judge_model: str,
-                     judge_extra_tokens: int = 0, n_compose: list[int] | None = None, batch: bool = False) -> float:
+                     judge_extra_tokens: int = 0, n_compose: list[int] | None = None) -> float:
     """Первая ступень — один проход по n_screen снимкам; вторая — n_judge[i] кандидатов темы i. Превью 4:3.
     judge_extra_tokens — профиль стиля и скриншоты-образцы в каждой группе второй ступени (FR-11.6).
-    batch — вторая ступень и сборка пакетом со скидкой; кэш мета-блока не учитывается: попадание в него
-    не гарантировано, оценка чуть выше факта (FR-9.1)."""
+    Кэш мета-блока не учитывается: попадание в него не гарантировано, оценка чуть выше факта (FR-9.1)."""
     screen = _stage_usd(n_screen, cfg, EST_OUTPUT_TOKENS_SCREEN, price_for(cfg, screen_model)) if n_screen else 0.0
     rest = 0.0
     if any(n > 0 for n in n_judge):
@@ -100,7 +97,7 @@ def estimate_run_usd(n_screen: int, n_judge: list[int], cfg: CloudCfg, screen_mo
         per_image = image_tokens(side, side * 3 // 4, side) + COMPOSE_LABEL_TOKENS
         rest += sum(usage_usd(TokenUsage(input=n * per_image + PROMPT_OVERHEAD_TOKENS + judge_extra_tokens,
                                          output=EST_OUTPUT_TOKENS_COMPOSE), judge_price) for n in n_compose if n > 0)
-    return screen + (rest * BATCH_DISCOUNT if batch else rest)
+    return screen + rest
 
 
 def check_budget(spent: float, estimate: float, limit: float) -> None:

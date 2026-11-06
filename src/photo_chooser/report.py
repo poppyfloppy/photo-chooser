@@ -11,10 +11,6 @@ from photo_chooser.select import ShotFacts
 
 
 
-MODE_SYNC = "синхронный"
-MODE_BATCH = "пакетный (Message Batches, −50%)"
-
-
 @dataclass
 class ReportHeader:
     screen_model: str | None  # None — без облака
@@ -25,7 +21,6 @@ class ReportHeader:
     warnings: list[str] = field(default_factory=list)
     album: str = ""
     style: str | None = None  # строка о профиле стиля (FR-6.3); None — без профиля
-    mode: str | None = None  # режим отправки второй ступени и сборки (FR-12); None — без облака
 
 
 @dataclass
@@ -99,8 +94,6 @@ def _header_lines(theme: Theme, header: ReportHeader) -> list[str]:
     else:
         lines.append(f"- Первая ступень: {header.screen_model or '—'}; вторая ступень и сборка: {header.model or '—'}")
         lines.append(f"- effort: {header.effort or '—'}")
-        if header.mode:
-            lines.append(f"- Режим: {header.mode}")
         lines.append(f"- Версия промпта: {header.prompt_versions or '—'}")
         if header.style:
             lines.append(f"- Стиль: {header.style}")

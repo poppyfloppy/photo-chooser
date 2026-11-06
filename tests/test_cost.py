@@ -45,12 +45,6 @@ def test_usage_usd_with_cache_opus():
     assert usage_usd(CACHED, OPUS) == pytest.approx(expected)
 
 
-def test_usage_usd_1h_write_and_batch():
-    one_hour = (1000 * 4 + 100 * 20 + 4000 * 4 * 2.0 + 40000 * 0.20) / 1e6
-    assert usage_usd(CACHED, OPUS, cache_ttl="1h") == pytest.approx(one_hour)
-    assert usage_usd(CACHED, OPUS, cache_ttl="1h", batch=True) == pytest.approx(one_hour * 0.5)
-
-
 def test_usage_of_missing_cache_fields():
     from types import SimpleNamespace
 
@@ -107,10 +101,3 @@ def test_estimate_includes_compose():
     assert estimate_run_usd(0, [], cfg, "claude-haiku-5-5", "claude-opus-5-5", n_compose=[30, 0]) == \
         pytest.approx(expected)
 
-
-def test_estimate_batch_halves_judge_and_compose():
-    cfg = CloudCfg()
-    args = (1000, [100, 100], cfg, "claude-haiku-5-5", "claude-opus-5-5")
-    full = estimate_run_usd(*args, n_compose=[30, 30])
-    screen = estimate_run_usd(1000, [], cfg, "claude-haiku-5-5", "claude-opus-5-5")
-    assert estimate_run_usd(*args, n_compose=[30, 30], batch=True) == pytest.approx(screen + 0.5 * (full - screen))

@@ -18,7 +18,7 @@ def _req(custom_id="j-a-01", model=HAIKU) -> ModelRequest:
 
 
 def _jobs(tag: str, n: int, handled: list[str]) -> list[Job]:
-    return [Job(make_request=lambda i=i: _req(f"{tag}-{i}"), tag=tag, meta={},
+    return [Job(make_request=lambda i=i: _req(f"{tag}-{i}"), tag=tag,
                 handle=lambda resp, i=i: handled.append(f"{tag}-{i}")) for i in range(1, n + 1)]
 
 
@@ -109,15 +109,11 @@ def test_ctrl_c_waits_in_flight_and_announces(monkeypatch):
     assert logs[-1] == "  Ctrl+C: дожидаюсь ответов на уже отправленные запросы — они оплачены и попадут в кэш"
 
 
-def test_sync_resume_is_noop():
-    SyncTransport(FakeClient(lambda n, kw: None)).resume("judge", lambda meta: None)
-
-
 def test_failure_carries_error():
     assert JobFailure("A", ValueError("x")).error.args == ("x",)
 
 
-def test_cached_prefix_first_job_alone(monkeypatch):
+def test_cached_request_goes_first_alone(monkeypatch):
     monkeypatch.setattr(transport, "MAX_PARALLEL_REQUESTS", 3)
     first_done = threading.Event()
     seen: list[bool] = []
@@ -129,8 +125,8 @@ def test_cached_prefix_first_job_alone(monkeypatch):
             seen.append(first_done.is_set())
         return fake_response(text="ok")
 
-    jobs = [Job(make_request=lambda i=i: ModelRequest(f"j-{i}", HAIKU, "low", "s", [], None, cache_ttl="5m"),
-                tag="A", meta={}, handle=lambda resp, i=i: first_done.set() if i == 1 else None) for i in range(1, 6)]
+    jobs = [Job(make_request=lambda i=i: ModelRequest(f"j-{i}", HAIKU, "low", "s", [], None, cached=True),
+                tag="A", handle=lambda resp, i=i: first_done.set() if i == 1 else None) for i in range(1, 6)]
     SyncTransport(FakeClient(h)).run("judge", jobs)
     assert seen == [True] * 4
 
@@ -139,6 +135,6 @@ def test_non_api_error_is_raised_not_marked_as_theme_failure():
     def broken(resp):
         raise ValueError("bug in parsing")
 
-    jobs = [Job(make_request=lambda: _req("A-1"), tag="A", meta={}, handle=broken)]
+    jobs = [Job(make_request=lambda: _req("A-1"), tag="A", handle=broken)]
     with pytest.raises(ValueError, match="bug in parsing"):
         SyncTransport(FakeClient(lambda n, kw: fake_response(text="ok"))).run("judge", jobs)

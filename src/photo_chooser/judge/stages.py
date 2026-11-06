@@ -1,10 +1,9 @@
 """Облачные ступени: первая — отбор по всем темам сразу, вторая — оценка кандидатов тем, сборка постов
 (SPEC FR-3 п.5, п.8, FR-4).
 
-Раннеры строят запросы и разбирают ответы; отправляет их транспорт (judge/transport.py) — синхронно или пакетом.
-Функции этапов собирают задания для всех тем запуска сразу (FR-3, «Порядок этапов»): ответ каждого задания
-пишется в кэш и расход его обработчиком, который строится только из meta задания — так же его восстановит
-пакетный режим в следующем запуске (FR-12.4).
+Раннеры строят запросы и разбирают ответы; отправляет их транспорт (judge/transport.py). Функции этапов собирают
+задания для всех тем запуска сразу (FR-3, «Порядок этапов»): ответ каждого задания пишет в кэш и расход его
+обработчик — оплаченный ответ не теряется ни при ошибке другой темы, ни при Ctrl+C.
 """
 
 import base64
@@ -232,18 +231,17 @@ class ScreenRunner:
         return _parse_group(response, uuids, ScreenOutput, convert)
 
 
-def _cache_marker(ttl: str) -> dict:
-    return {"type": "ephemeral"} if ttl == "5m" else {"type": "ephemeral", "ttl": ttl}
+CACHE_MARKER = {"type": "ephemeral"}  # TTL 5 минут: запросы идут подряд и держат кэш тёплым (D15)
 
 
-def _mark_prefix(system: str, references: list[dict], ttl: str) -> tuple[str | list[dict], list[dict]]:
+def _mark_prefix(system: str, references: list[dict]) -> tuple[str | list[dict], list[dict]]:
     """Метка кэша на последнем блоке общего префикса (D15): последний скриншот-образец, без них — system.
     Тема и превью кандидатов идут после метки и в кэш не попадают."""
     images = [i for i, b in enumerate(references) if b["type"] == "image"]
     if images:
-        references[images[-1]] = {**references[images[-1]], "cache_control": _cache_marker(ttl)}
+        references[images[-1]] = {**references[images[-1]], "cache_control": CACHE_MARKER}
         return system, references
-    return [{"type": "text", "text": system, "cache_control": _cache_marker(ttl)}], references
+    return [{"type": "text", "text": system, "cache_control": CACHE_MARKER}], references
 
 
 def reference_content(style: "StyleContext | None") -> list[dict]:
@@ -263,9 +261,8 @@ def judge_prompt_version(style: "StyleContext | None") -> str:
 
 class JudgeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None, cache_ttl: Literal["5m", "1h"] = "5m"):
+                 style: "StyleContext | None" = None):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
-        self.cache_ttl = cache_ttl
 
     @property
     def prompt_version(self) -> str:
@@ -281,10 +278,10 @@ class JudgeRunner:
             system += "\n\n" + STYLE_BLOCK.format(text=self.style.text)
             if self.style.references:  # оговорка о скриншотах — только когда они приложены
                 system += "\n" + STYLE_SCREENSHOTS_NOTE
-        marked, content = _mark_prefix(system, reference_content(self.style), self.cache_ttl)
+        marked, content = _mark_prefix(system, reference_content(self.style))
         content += image_content(group, self.preview, with_orientation=True)
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        return ModelRequest(custom_id, self.model, self.effort, marked, content, JudgeOutput, self.cache_ttl)
+        return ModelRequest(custom_id, self.model, self.effort, marked, content, JudgeOutput, cached=True)
 
     def parse(self, response, shots: list[tuple[str, str]]) -> GroupResult[Judgment]:
         """shots — (uuid, ориентация) кадров группы по порядку p01…"""
@@ -330,7 +327,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
             cache.add_spend(album_uuid, runner.model, usd)
             _merge(outcome, result, usd, lock)
 
-        return Job(lambda: runner.request(album_title, themes, group, f"s-{n:03d}"), "screen", {}, handle)
+        return Job(lambda: runner.request(album_title, themes, group, f"s-{n:03d}"), "screen", handle)
 
     failures = transport.run("screen", [job(n, g) for n, g in enumerate(groups, 1)], log)
     if failures:
@@ -342,25 +339,22 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
               album_uuid: str, log: Callable[[str], None] = _quiet) -> dict[str, StageOutcome[Judgment]]:
     """Вторая ступень всех тем одним вызовом транспорта; исходы — по theme.key()."""
     version = runner.prompt_version
+    price = price_for(cfg, runner.model)
     lock = threading.Lock()
 
-    def handler_for(meta: dict, outcome: StageOutcome | None = None) -> Callable[[object], None]:
-        shots = [(uuid, orient) for uuid, orient in meta["shots"]]
-        price = price_for(cfg, meta["model"])
+    def job(key: str, theme: Theme, n: int, group: list[Asset], outcome: StageOutcome) -> Job:
+        shots = [(a.uuid, orientation(a)) for a in group]
 
         def handle(response) -> None:
             result = runner.parse(response, shots)
-            cache.put_judgments(result.items, meta["theme_key"], meta["model"], meta["prompt_version"])
-            usd = usage_usd(result.usage, price, cache_ttl=meta.get("cache_ttl") or "5m", batch=meta["batch"])
-            cache.add_spend(album_uuid, meta["model"], usd)
-            if outcome is not None:
-                _merge(outcome, result, usd, lock)
+            cache.put_judgments(result.items, key, runner.model, version)
+            usd = usage_usd(result.usage, price)
+            cache.add_spend(album_uuid, runner.model, usd)
+            _merge(outcome, result, usd, lock)
 
-        return handle
+        return Job(lambda: runner.request(theme, group, f"j-{key}-{n:02d}"), key, handle)
 
-    transport.resume("judge", handler_for, log)
-    price_for(cfg, runner.model)
-    log(f"Вторая ступень ({runner.model}{', пакет' if transport.batch else ''}): тем {len(tasks)}")
+    log(f"Вторая ступень ({runner.model}): тем {len(tasks)}")
     outcomes: dict[str, StageOutcome[Judgment]] = {}
     jobs: list[Job] = []
     for t in tasks:
@@ -377,11 +371,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
         _check_group_price(groups, cfg, runner.extra_input_tokens)
         outcome = outcomes[key] = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0,
                                                from_cache=len(cached))
-        for n, g in enumerate(groups, 1):
-            meta = {"theme_key": key, "model": runner.model, "prompt_version": version, "batch": transport.batch,
-                    "cache_ttl": runner.cache_ttl, "shots": [[a.uuid, orientation(a)] for a in g]}
-            jobs.append(Job(lambda theme=t.theme, g=g, cid=f"j-{key}-{n:02d}": runner.request(theme, g, cid), key,
-                            meta, handler_for(meta, outcome)))
+        jobs += [job(key, t.theme, n, g, outcome) for n, g in enumerate(groups, 1)]
     for failure in transport.run("judge", jobs, log):
         outcomes[failure.tag].error = outcomes[failure.tag].error or failure.error
     return outcomes
@@ -421,16 +411,15 @@ def _compose_style_system(system: str, style: "StyleContext | None") -> str:
 
 class ComposeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None, cache_ttl: Literal["5m", "1h"] = "5m"):
+                 style: "StyleContext | None" = None):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
-        self.cache_ttl = cache_ttl
 
     def request(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
                 custom_id: str) -> ModelRequest:
         system = _compose_style_system(COMPOSE_SYSTEM_PROMPT.format(carousels=limits.carousels,
                                                                     carousel_size=limits.carousel_size,
                                                                     stories=limits.stories), self.style)
-        system, content = _mark_prefix(system, reference_content(self.style), self.cache_ttl)
+        system, content = _mark_prefix(system, reference_content(self.style))
         for i, a in enumerate(cands, 1):
             f = facts[a.uuid]
             with objc.autorelease_pool():
@@ -441,7 +430,7 @@ class ComposeRunner:
                                                     f"«{reason}»"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
         content.append({"type": "text", "text": f"Theme: «{theme_text(theme)}»"})
-        return ModelRequest(custom_id, self.model, self.effort, system, content, ComposeOutput, self.cache_ttl)
+        return ModelRequest(custom_id, self.model, self.effort, system, content, ComposeOutput, cached=True)
 
     def parse(self, response) -> ComposeResult:
         usage = TokenUsage.of(response.usage)
@@ -464,7 +453,7 @@ def compose_input_fingerprint(cands: list[Asset], facts: dict[str, ShotFacts], l
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def _answer_known(output: ComposeOutput, known: dict[str, str]) -> bool:
+def _answer_known(output: ComposeOutput, known: dict[str, Asset]) -> bool:
     """Пустой ответ — валидное «ничего»; ответ только с неизвестными id — сбой, его не кэшируем."""
     ids = [s.id for c in output.carousels for s in c.slides] + [s.id for s in output.stories]
     return not ids or any(i in known for i in ids)
@@ -487,27 +476,24 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
     """Один запрос сборки на тему, все темы одним вызовом транспорта; исходы — по theme.key(). Ошибка API
     в запросе темы — сбой сборки этой темы (FR-4.4); ошибки ключа и баланса поднимаются."""
     answers: dict[str, tuple[ComposeResult, float]] = {}
+    price = price_for(cfg.cloud, runner.model)
     lock = threading.Lock()
 
-    def handler_for(meta: dict, key: str | None = None) -> Callable[[object], None]:
-        price = price_for(cfg.cloud, meta["model"])
-
+    def job(key: str, t: ComposeTask, ids: dict[str, Asset], fingerprint: str) -> Job:
         def handle(response) -> None:
             result = runner.parse(response)
-            usd = usage_usd(result.usage, price, cache_ttl=meta.get("cache_ttl") or "5m", batch=meta["batch"])
-            cache.add_spend(album_uuid, meta["model"], usd)
-            if result.output is not None and _answer_known(result.output, meta["ids"]):
-                cache.put_composition(meta["theme_key"], meta["model"], meta["prompt_version"], meta["input_fp"],
+            usd = usage_usd(result.usage, price)
+            cache.add_spend(album_uuid, runner.model, usd)
+            if result.output is not None and _answer_known(result.output, ids):
+                cache.put_composition(key, runner.model, COMPOSE_PROMPT_VERSION, fingerprint,
                                       result.output.model_dump_json())
-            if key is not None:
-                with lock:
-                    answers[key] = (result, usd)
+            with lock:
+                answers[key] = (result, usd)
 
-        return handle
+        return Job(lambda: runner.request(t.theme, t.cands, t.facts, cfg.posts, f"c-{key}"), key, handle)
 
-    transport.resume("compose", handler_for, log)
     if tasks:
-        log(f"Сборка постов ({runner.model}{', пакет' if transport.batch else ''}): тем {len(tasks)}")
+        log(f"Сборка постов ({runner.model}): тем {len(tasks)}")
     outcomes: dict[str, ComposeOutcome] = {}
     sent: dict[str, dict[str, Asset]] = {}
     jobs: list[Job] = []
@@ -530,12 +516,8 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
             raise ValueError(f"Запрос сборки из {len(t.cands)} превью ≈ {tokens} входных токенов — больше ценового "
                              f"порога {HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.compose_candidates.")
         log(f"  «{t.theme.name}»: кандидатов {len(t.cands)}")
-        meta = {"theme_key": key, "model": runner.model, "prompt_version": COMPOSE_PROMPT_VERSION,
-                "batch": transport.batch, "cache_ttl": runner.cache_ttl, "input_fp": fingerprint,
-                "ids": {cid: a.uuid for cid, a in ids.items()}}
         sent[key] = ids
-        jobs.append(Job(lambda t=t, cid=f"c-{key}": runner.request(t.theme, t.cands, t.facts, cfg.posts, cid), key,
-                        meta, handler_for(meta, key)))
+        jobs.append(job(key, t, ids, fingerprint))
     failures = {f.tag: f.error for f in transport.run("compose", jobs, log)}
     for key, ids in sent.items():
         if key in failures:

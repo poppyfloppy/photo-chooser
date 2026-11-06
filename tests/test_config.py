@@ -149,6 +149,14 @@ def test_pricing_override_without_cache_read_uses_default_share(tmp_path):
     assert load_app_config(path).cloud.pricing["claude-opus-5-5"].cache_read_price == pytest.approx(0.4)
 
 
+def test_cloud_batch_key_rejected(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("cloud:\n  batch: true\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="cloud.batch удалён в версии 0.5.1: пакетного режима больше нет "
+                                          r"\(SPEC D16\) — уберите ключ из config.yaml"):
+        load_app_config(path)
+
+
 def test_app_config_pricing_override_keeps_other_models(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("cloud:\n  pricing:\n    claude-haiku-5-5: {input: 0.2, output: 1.0}\n", encoding="utf-8")
