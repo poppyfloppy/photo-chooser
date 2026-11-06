@@ -98,11 +98,11 @@ DAY = Theme(name="День 1", start=datetime(2026, 3, 14, 0, 0), end=datetime(2
 
 def compose_reply(ids, slides=3, stories=2):
     """Сборка из заглушки: первые slides кандидатов — карусель «Сюжет» (первый с запасным), следующие — stories."""
-    first = [ComposeSlide(id=ids[0], alternatives=ids[slides:slides + 1])] if ids else []
-    rest = [ComposeSlide(id=i, alternatives=[]) for i in ids[1:slides]]
+    first = [ComposeSlide(id=ids[0], alternatives=ids[slides:slides + 1], crop="")] if ids else []
+    rest = [ComposeSlide(id=i, alternatives=[], crop="") for i in ids[1:slides]]
     story_ids = ids[slides + 1:slides + 1 + stories]
     return ComposeOutput(carousels=[ComposeCarousel(title="Сюжет", slides=first + rest)] if ids else [],
-                         stories=[ComposeStory(id=i, kind="interesting", hint="пояснить") for i in story_ids])
+                         stories=[ComposeStory(id=i, kind="interesting", hint="пояснить", crop="") for i in story_ids])
 
 
 def handler(match=True, fail_theme=None, compose=None):
@@ -119,7 +119,7 @@ def handler(match=True, fail_theme=None, compose=None):
         if fail_theme and f"«{fail_theme}" in last_text(content):
             return api_error()
         return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=True, score=7, interesting=False,
-                                                          reason="подходит", crop_feed="", crop_stories="") for i in ids]))
+                                                          reason="подходит") for i in ids]))
     return h
 
 
@@ -570,8 +570,7 @@ def test_compose_refusal_fallback_skips_off_theme(tmp_path):
         if output_model_of(kw) is JudgeOutput:
             ids = ids_in(kw["messages"][0]["content"])
             return fake_response(JudgeOutput(items=[JudgeItem(id=i, matches_theme=i in ("p01", "p03"), score=9,
-                                                              interesting=False, reason="r", crop_feed="",
-                                                              crop_stories="") for i in ids]))
+                                                              interesting=False, reason="r") for i in ids]))
         return base(n, kw)
 
     result, _ = _run(album, _trip(GIZA), _cfg(tmp_path, feed=9, stories=9), Cache(tmp_path / "c.sqlite"),

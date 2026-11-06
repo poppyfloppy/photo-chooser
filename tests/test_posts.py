@@ -5,6 +5,7 @@ from photo_chooser.config import PostsCfg, Thresholds
 from photo_chooser.judge.stages import ComposeCarousel, ComposeOutput, ComposeSlide, ComposeStory
 from photo_chooser.models import Judgment, LocalFeatures
 from photo_chooser.select import (
+    ShotFacts,
     compose_candidates,
     fallback_posts,
     local_facts,
@@ -17,9 +18,8 @@ TH = Thresholds()  # min_score = 5
 LIMITS = PostsCfg(carousels=2, carousel_size=9, stories=9)  # прежние лимиты: проверки ниже о них
 
 
-def _j(a, score, matches=True, reason="r", interesting=False, crop_feed="", crop_stories=""):
-    return Judgment(uuid=a.uuid, matches_theme=matches, score=score, reason=reason, interesting=interesting,
-                    crop_feed=crop_feed, crop_stories=crop_stories)
+def _j(a, score, matches=True, reason="r", interesting=False):
+    return Judgment(uuid=a.uuid, matches_theme=matches, score=score, reason=reason, interesting=interesting)
 
 
 def _ids(n):
@@ -54,10 +54,10 @@ def test_compose_candidates_interval_only_ignores_matches():
 
 
 def _out(carousels=(), stories=()):
-    return ComposeOutput(carousels=[ComposeCarousel(title=t, slides=[ComposeSlide(id=i, alternatives=list(alts))
+    return ComposeOutput(carousels=[ComposeCarousel(title=t, slides=[ComposeSlide(id=i, alternatives=list(alts), crop="")
                                                                      for i, alts in slides])
                                     for t, slides in carousels],
-                         stories=[ComposeStory(id=i, kind=k, hint=h) for i, k, h in stories])
+                         stories=[ComposeStory(id=i, kind=k, hint=h, crop="") for i, k, h in stories])
 
 
 def test_validate_drops_unknown_and_duplicates():
@@ -132,14 +132,13 @@ def test_local_posts_by_quality():
 
 def test_shot_facts_and_local_facts():
     a = make_asset(uuid="a")
-    facts = shot_facts({"a": _j(a, 8, reason="Сфинкс", interesting=True, crop_feed="4:5", crop_stories="9:16")})
-    assert (facts["a"].score, facts["a"].interesting, facts["a"].reason, facts["a"].crop_feed) == \
-        (8, True, "Сфинкс", "4:5")
+    facts = shot_facts({"a": _j(a, 8, reason="Сфинкс", interesting=True)})
+    assert facts["a"] == ShotFacts(8, True, "Сфинкс")
     feats = {"a": LocalFeatures(uuid="a", aesthetic=0.7, is_utility=False, sharpness=5, mean_luma=0.5,
                                 face_quality=None, feature_print=b"")}
     local = local_facts([a], {"a": 0.61}, feats)
     assert local["a"].score == 0.61 and local["a"].interesting is False
-    assert "эстетика 0.70" in local["a"].reason and local["a"].crop_feed == ""
+    assert "эстетика 0.70" in local["a"].reason
 
 
 def test_fallback_posts_excludes_off_theme():
@@ -233,3 +232,25 @@ def test_compose_window_from_config():
     from photo_chooser.select import compose_window
 
     assert compose_window(CloudCfg(compose_candidates=30), PostsCfg(stories=9)) == (30, 9)
+
+
+def test_validate_composition_keeps_crop_and_blanks_vertical():
+    h = make_asset(uuid="H", width=4032, height=3024)
+    v = make_asset(uuid="V", width=3024, height=4032)
+    s = make_asset(uuid="S", width=3000, height=3000)
+    ids = {"c01": h, "c02": v, "c03": s}
+    out = ComposeOutput(carousels=[ComposeCarousel(title="T", slides=[
+        ComposeSlide(id="c01", alternatives=[], crop=" оставить пирамиду справа "),
+        ComposeSlide(id="c02", alternatives=[], crop="лишний совет")])],
+        stories=[ComposeStory(id="c03", kind="best", hint="", crop="сфинкс по центру")])
+    posts = validate_composition(out, ids, LIMITS)
+    assert [sl.crop for sl in posts.carousels[0].slides] == ["оставить пирамиду справа", ""]
+    assert posts.stories[0].crop == "сфинкс по центру"
+
+
+def test_fallback_posts_have_no_crop():
+    assets = [make_asset(uuid=f"F{i}") for i in range(4)]
+    judgments = {a.uuid: _j(a, 8) for a in assets}
+    posts = fallback_posts(assets, judgments, {}, TH, PostsCfg(carousel_size=2, stories=2))
+    assert all(sl.crop == "" for c in posts.carousels for sl in c.slides)
+    assert all(st.crop == "" for st in posts.stories)

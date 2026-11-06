@@ -41,7 +41,7 @@ def _cands(n=3):
 
 
 def _facts(cands, score=8, interesting=False):
-    return {a.uuid: ShotFacts(score, interesting, f"Причина {a.uuid}", "", "") for a in cands}
+    return {a.uuid: ShotFacts(score, interesting, f"Причина {a.uuid}") for a in cands}
 
 
 def _style(fp="fp000001"):
@@ -51,8 +51,8 @@ def _style(fp="fp000001"):
 
 def compose_handler(out=None, **resp):
     out = out or ComposeOutput(carousels=[ComposeCarousel(title="Сфинкс", slides=[
-        ComposeSlide(id="c02", alternatives=["c01"])])], stories=[ComposeStory(id="c03", kind="interesting",
-                                                                               hint="рассказать о ладье")])
+        ComposeSlide(id="c02", alternatives=["c01"], crop="")])], stories=[ComposeStory(id="c03", kind="interesting",
+                                                                               hint="рассказать о ладье", crop="")])
     return lambda n, kw: fake_response(out, **resp)
 
 
@@ -127,7 +127,7 @@ def test_compose_fingerprint_depends_on_limits_and_style():
 def test_compose_fingerprint_depends_on_interesting():
     cands = _cands()
     facts = _facts(cands)
-    marked = {**facts, "K1": ShotFacts(8, True, "Причина K1", "", "")}
+    marked = {**facts, "K1": ShotFacts(8, True, "Причина K1")}
     assert compose_input_fingerprint(cands, facts, AppConfig().posts, None) != \
         compose_input_fingerprint(cands, marked, AppConfig().posts, None)
 
@@ -135,7 +135,7 @@ def test_compose_fingerprint_depends_on_interesting():
 def test_compose_label_strength_and_interesting():
     client = FakeClient(compose_handler())
     cands = [make_asset(uuid="H1"), make_asset(uuid="H2")]  # обе горизонтальные
-    facts = {"H1": ShotFacts(8, True, "r", "", ""), "H2": ShotFacts(6, False, "r", "", "")}
+    facts = {"H1": ShotFacts(8, True, "r"), "H2": ShotFacts(6, False, "r")}
     compose_once(client, ComposeRunner(HAIKU, "medium", _preview), THEME, cands, facts, AppConfig().posts)
     content = client.calls[0]["messages"][0]["content"]
     labels = [b["text"] for b in content if b["type"] == "text" and b["text"].startswith("id: ")]
@@ -189,8 +189,8 @@ def test_compose_over_price_threshold_rejected(tmp_path):
 
 
 def test_compose_answer_without_known_ids_is_failure(tmp_path):
-    out = ComposeOutput(carousels=[ComposeCarousel(title="X", slides=[ComposeSlide(id="z9", alternatives=[])])],
-                        stories=[ComposeStory(id="q1", kind="best", hint="")])
+    out = ComposeOutput(carousels=[ComposeCarousel(title="X", slides=[ComposeSlide(id="z9", alternatives=[], crop="")])],
+                        stories=[ComposeStory(id="q1", kind="best", hint="", crop="")])
     client = FakeClient(compose_handler(out))
     cache, cands = Cache(tmp_path / "c.sqlite"), _cands()
     runner = ComposeRunner(HAIKU, "medium", _preview)
@@ -212,7 +212,7 @@ def test_compose_empty_answer_is_valid_nothing(tmp_path):
 
 
 def test_compose_prompt_version_bumped():
-    assert COMPOSE_PROMPT_VERSION == "compose-5"  # сборки по прежним правилам в кэше не годятся
+    assert COMPOSE_PROMPT_VERSION == "compose-6"  # сборки по прежним правилам в кэше не годятся
 
 
 def test_compose_prompt_allows_leaving_candidates_out():
@@ -278,3 +278,9 @@ def test_compose_request_marks_prefix():
     plain = ComposeRunner(OPUS, "medium", _preview).request(THEME, cands, _facts(cands), AppConfig().posts, "c-x")
     assert plain.system[0]["cache_control"] == {"type": "ephemeral"}
     assert not any("cache_control" in b for b in plain.content)
+
+
+def test_compose_schema_has_crop():
+    assert "crop" in ComposeSlide.model_fields and "crop" in ComposeStory.model_fields
+    assert "4:5 for a carousel photo, 9:16 for a story" in COMPOSE_SYSTEM_PROMPT
+    assert "Alternatives get no crop advice." in COMPOSE_SYSTEM_PROMPT

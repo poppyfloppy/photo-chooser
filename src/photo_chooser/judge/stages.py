@@ -72,8 +72,6 @@ class JudgeItem(BaseModel):
     score: int
     interesting: bool
     reason: str
-    crop_feed: str  # обязательные: у вертикальных кадров модель возвращает пустую строку
-    crop_stories: str
 
 
 class JudgeOutput(BaseModel):
@@ -83,6 +81,7 @@ class JudgeOutput(BaseModel):
 class ComposeSlide(BaseModel):
     id: str
     alternatives: list[str]
+    crop: str  # обязательное: у вертикальных кадров модель возвращает пустую строку
 
 
 class ComposeCarousel(BaseModel):
@@ -94,6 +93,7 @@ class ComposeStory(BaseModel):
     id: str
     kind: Literal["best", "interesting"]
     hint: str
+    crop: str
 
 
 class ComposeOutput(BaseModel):
@@ -291,14 +291,10 @@ class JudgeRunner:
 
     def parse(self, response, shots: list[tuple[str, str]]) -> GroupResult[Judgment]:
         """shots — (uuid, ориентация) кадров группы по порядку p01…"""
-        orientations = dict(shots)
 
         def convert(uuid: str, item: JudgeItem) -> Judgment:
-            vertical = orientations[uuid] == "vertical"  # вертикальный кадр кадрировать не нужно
             return Judgment(uuid=uuid, matches_theme=bool(item.matches_theme), score=_clamp(item.score),
-                            reason=item.reason.strip(), interesting=bool(item.interesting),
-                            crop_feed="" if vertical else item.crop_feed.strip(),
-                            crop_stories="" if vertical else item.crop_stories.strip())
+                            reason=item.reason.strip(), interesting=bool(item.interesting))
 
         return _parse_group(response, [uuid for uuid, _ in shots], JudgeOutput, convert)
 

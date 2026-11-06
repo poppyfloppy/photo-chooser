@@ -122,7 +122,7 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
             alternatives = ", ".join(_files(alt) for alt in slide.alternatives) or "—"
             lines.append(f"| {pos} | {_files(slide.shot)} | {_score_cell(f)} | {_orientation_of(slide.shot.asset)} "
                          f"| {_cell('; '.join(slide.shot.notes))} | {_cell(f.reason) if f else '—'} "
-                         f"| {(_cell(f.crop_feed) if f else '') or '—'} | {alternatives} |")
+                         f"| {_cell(slide.crop) or '—'} | {alternatives} |")
         lines.append("")
     lines += ["## Stories", ""]
     if not posts.stories:
@@ -135,7 +135,7 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
             lines.append(f"| {pos} | {_files(story.shot)} | {_score_cell(f)} "
                          f"| {STORY_KINDS.get(story.kind, story.kind)} "
                          f"| {_cell(story.hint) or '—'} | {_cell(f.reason) if f else '—'} "
-                         f"| {(_cell(f.crop_stories) if f else '') or '—'} |")
+                         f"| {_cell(story.crop) or '—'} |")
         lines.append("")
 
     sizes = " + ".join(str(len(c.slides)) for c in posts.carousels)

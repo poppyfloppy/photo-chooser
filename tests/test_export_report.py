@@ -228,10 +228,11 @@ def _posts_stats(**kw):
 
 def test_report_posts_tables(tmp_path):
     a, lib = _posts_library(tmp_path, 5)
-    posts = Posts([Carousel("Пирамиды", [Slide(a[0], [a[1]]), Slide(a[2])])],
-                  [StoryPick(a[3], "best", ""), StoryPick(a[4], "interesting", "рассказать о ладье Хеопса")])
+    posts = Posts([Carousel("Пирамиды", [Slide(a[0], [a[1]], crop="до 4:5: справа"), Slide(a[2])])],
+                  [StoryPick(a[3], "best", ""),
+                   StoryPick(a[4], "interesting", "рассказать о ладье Хеопса", crop="до 9:16: центр")])
     exported = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
-    facts = {x.uuid: ShotFacts(8, False, f"Причина {x.uuid}", "до 4:5: справа", "до 9:16: центр") for x in a}
+    facts = {x.uuid: ShotFacts(8, False, f"Причина {x.uuid}") for x in a}
     header = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, medium, 768 px",
                           prompt_versions="screen-2, judge-4, compose-1", run_at=NOW, warnings=[], album="Egypt.26")
     path = tmp_path / "report.md"
@@ -286,3 +287,26 @@ def test_report_header_stage_lines(tmp_path):
     assert ("- Первая ступень: claude-haiku-5-5, medium, 1024 px; вторая ступень и сборка: claude-opus-5-5, "
             "high, 768 px") in lines
     assert not any(line.startswith("- effort:") for line in lines)
+
+
+def test_report_crop_from_compose(tmp_path):
+    a, lib = _posts_library(tmp_path, 4)
+    posts = Posts([Carousel("Пирамиды", [Slide(a[0], [a[1]], crop="до 4:5: справа"), Slide(a[2])])],
+                  [StoryPick(a[3], "best", "", crop="до 9:16: центр")])
+    exported = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    facts = {x.uuid: ShotFacts(8, False, f"Причина {x.uuid}") for x in a}
+    header = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, high, 768 px",
+                          prompt_versions="screen-4, judge-8, compose-6", run_at=NOW, album="Egypt.26")
+    path = tmp_path / "report.md"
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, facts, _posts_stats())
+    text = path.read_text(encoding="utf-8")
+    assert "| 1 | 01_IMG_0.HEIC | 8 | горизонтальная |  | Причина S0 | до 4:5: справа | 01a_IMG_1.HEIC |" in text
+    assert "| 2 | 02_IMG_2.HEIC | 8 | горизонтальная |  | Причина S2 | — | — |" in text
+    assert "| 1 | 01_IMG_3.HEIC | 8 | лучшее | — | Причина S3 | до 9:16: центр |" in text
+
+
+def test_export_replaced_slide_drops_crop(tmp_path):
+    a, lib = _posts_library(tmp_path, 3, failing={"S1"})
+    posts = Posts([Carousel("X", [Slide(a[0], crop="центр"), Slide(a[1], [a[2]], crop="пирамида справа")])], [])
+    out = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
+    assert [s.crop for s in out.carousels[0].slides] == ["центр", ""]  # совет был об оригинале, не о замене

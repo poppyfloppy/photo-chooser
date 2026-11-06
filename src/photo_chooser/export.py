@@ -77,6 +77,7 @@ class ExportedSlide:
     shot: ExportedShot
     alternatives: list[ExportedShot]
     replaced: bool  # слайд заменён альтернативой: оригинал не скачался
+    crop: str = ""  # совет сборки по кадрированию до 4:5
 
 
 @dataclass
@@ -91,6 +92,7 @@ class ExportedStory:
     shot: ExportedShot
     kind: str
     hint: str
+    crop: str = ""  # совет сборки по кадрированию до 9:16
 
 
 @dataclass
@@ -178,12 +180,13 @@ def export_posts(library: PhotosLibrary, posts: Posts, theme_dir: Path, tmp: Pat
                 alt = attempt(asset, cdir / "alternatives", f"{pos:02d}{'ab'[len(alternatives)]}")
                 if alt is not None:
                     alternatives.append(alt)
-            slides.append(ExportedSlide(shot, alternatives, replaced=bool(used)))
+            slides.append(ExportedSlide(shot, alternatives, replaced=bool(used),
+                                        crop="" if used else slide.crop))  # совет — об оригинале, не о замене
         if slides:
             carousels.append(ExportedCarousel(carousel.title, folder, slides))
     stories: list[ExportedStory] = []
     for pick in posts.stories:
         shot = attempt(pick.asset, stories_dir, f"{len(stories) + 1:02d}")
         if shot is not None:
-            stories.append(ExportedStory(shot, pick.kind, pick.hint))
+            stories.append(ExportedStory(shot, pick.kind, pick.hint, pick.crop))
     return ExportedPosts(carousels, stories, failed)
