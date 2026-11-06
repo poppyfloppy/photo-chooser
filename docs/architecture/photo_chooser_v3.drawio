@@ -1,0 +1,125 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="FxjLjEoNtd7T_hra4tTh">
+    <mxGraphModel dx="1204" dy="728" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-6" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;" value="" vertex="1">
+          <mxGeometry height="330" width="390" x="160" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-43" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-41">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-1" parent="1" style="whiteSpace=wrap;html=1;" value="Ядро на Python (Photo-Chooser)" vertex="1">
+          <mxGeometry height="45" width="150" x="290" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-28" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;defaultLabelBackgroundColor=page;flowAnimation=1;" target="wUoiZI5fO7IhXiXsShTA-26" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-37" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-8" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="200" y="190" />
+              <mxPoint x="200" y="190" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-2" parent="1" style="whiteSpace=wrap;html=1;aspect=fixed;" value="MacOS клиент" vertex="1">
+          <mxGeometry height="80" width="80" x="160" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-29" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;defaultLabelBackgroundColor=page;flowAnimation=1;" target="wUoiZI5fO7IhXiXsShTA-26" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-3" parent="1" style="whiteSpace=wrap;html=1;aspect=fixed;" value="iOS клиент" vertex="1">
+          <mxGeometry height="80" width="80" x="470" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-36" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.75;entryY=1;entryDx=0;entryDy=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="220" y="200" />
+              <mxPoint x="220" y="200" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-8" parent="1" style="whiteSpace=wrap;html=1;" value="Фасад – гейтвэй (через протокол. порт)" vertex="1">
+          <mxGeometry height="60" width="370" x="170" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-11" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Адаптер на провайдеры LLM (через протокол. порт)" vertex="1">
+          <mxGeometry height="60" width="370" x="170" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-12" parent="1" style="whiteSpace=wrap;html=1;" value="Antrophic провайдер адаптер" vertex="1">
+          <mxGeometry height="90" width="90" x="170" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-17" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.122;entryY=0.983;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-24" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.527;entryY=0.967;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-25" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.527;entryY=-0.05;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-26" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;perimeter=cloudPerimeter;" value="Синхронизация через Photos" vertex="1">
+          <mxGeometry height="80" width="120" x="295" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-31" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-12" style="endArrow=none;dashed=1;html=1;rounded=0;defaultLabelBackgroundColor=page;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="380" y="490" as="sourcePoint" />
+            <mxPoint x="420" y="575" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-32" parent="1" style="whiteSpace=wrap;html=1;" value="DeepSeek провайдер (в будущем) адаптер" vertex="1">
+          <mxGeometry height="90" width="90" x="420" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-33" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-32" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.797;entryY=0.95;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-34" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;rounded=0;" value="&lt;ol&gt;&lt;li&gt;SwiftUI multiplatform&lt;br&gt;&lt;/li&gt;&lt;li&gt;PhotoKit&lt;/li&gt;&lt;/ol&gt;" vertex="1">
+          <mxGeometry height="80" width="180" x="550" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-35" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;rounded=0;" value="&lt;ol&gt;&lt;li&gt;Сервис монолит&lt;br&gt;&lt;/li&gt;&lt;li&gt;Конфиги&lt;/li&gt;&lt;/ol&gt;" vertex="1">
+          <mxGeometry height="80" width="180" x="550" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-38" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.625;entryY=1.013;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;exitX=0.946;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;" target="wUoiZI5fO7IhXiXsShTA-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-39" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.919;entryY=0.033;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-40" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" value="БД" vertex="1">
+          <mxGeometry height="80" width="60" x="20" y="313" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-41" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="БД провайдер адаптер" vertex="1">
+          <mxGeometry height="110" width="120" x="110" y="297.5" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-44" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-41" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-40">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-45" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;rounded=0;" value="Пользовательские сценарии:&lt;div&gt;&lt;ol&gt;&lt;li&gt;Пользователь хочет задать стиль:&lt;/li&gt;&lt;ol&gt;&lt;li&gt;Модель формирует стиль для постов (текстовое описание) + N рефересных изображений&amp;nbsp;&lt;/li&gt;&lt;li&gt;Модель формирует стиль для историй (текстовое описание) + N рефересных изображений&amp;nbsp;&lt;/li&gt;&lt;/ol&gt;&lt;li&gt;Пользователь хочет получить выборку по альбому&lt;/li&gt;&lt;ol&gt;&lt;li&gt;Пользователь создает (выбирает) альбом с фото, указывает его timezone&lt;/li&gt;&lt;li&gt;Выбирает темы: название, тэги (опционально), даты (from – to) (опционально), пост и / или истории (по дефолту и то, и то). Обязательно должно быть что-то одно – даты / тэги&lt;/li&gt;&lt;li&gt;Application делает отбор фото и предлагает пользователю: пост-карусель (и альтернативы для нее), истории&lt;/li&gt;&lt;li&gt;Пользователь подтверждает (или замещает из альтернатив \ историй). Финализирует пост и истории&lt;/li&gt;&lt;li&gt;Пользователь делает ретушь выбранных фото для поста и сторий&lt;/li&gt;&lt;li&gt;Модель дает оценку фото после ретуши и рекомендации (опираясь на записанный стиль и референсы)&lt;/li&gt;&lt;li&gt;Пользователь делает пост в Instagram&lt;/li&gt;&lt;/ol&gt;&lt;/ol&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="210" width="750" x="50" y="930" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-48" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-46" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-47">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-46" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;rotation=90;" value="" vertex="1">
+          <mxGeometry height="200" width="60" x="324" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-47" parent="1" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;perimeter=cloudPerimeter;" value="LLM провайдер" vertex="1">
+          <mxGeometry height="80" width="120" x="294" y="840" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-52" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-46">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-53" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-32" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-46">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-54" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Очередь&amp;nbsp;" vertex="1">
+          <mxGeometry height="30" width="60" x="325" y="715" as="geometry" />
+        </mxCell>
+        <mxCell id="wUoiZI5fO7IhXiXsShTA-55" edge="1" parent="1" source="wUoiZI5fO7IhXiXsShTA-47" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;defaultLabelBackgroundColor=page;" target="wUoiZI5fO7IhXiXsShTA-46">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
