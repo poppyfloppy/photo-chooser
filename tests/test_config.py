@@ -157,6 +157,15 @@ def test_cloud_batch_key_rejected(tmp_path):
         load_app_config(path)
 
 
+def test_judge_preview_larger_than_screen_rejected(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("cloud:\n  judge: {preview_px: 1280}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"cloud\.judge\.preview_px \(1280\) больше cloud\.screen\.preview_px \(1024\)"):
+        load_app_config(path)
+    path.write_text("cloud:\n  screen: {preview_px: 1280}\n  judge: {preview_px: 1280}\n", encoding="utf-8")
+    assert load_app_config(path).cloud.judge.preview_px == 1280
+
+
 def test_app_config_pricing_override_keeps_other_models(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("cloud:\n  pricing:\n    claude-haiku-5-5: {input: 0.2, output: 1.0}\n", encoding="utf-8")

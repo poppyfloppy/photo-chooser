@@ -194,6 +194,16 @@ class CloudCfg(_Strict):
                 f"  judge: {{model: {judge}, effort: high, preview_px: 768}}")
         return data
 
+    @model_validator(mode="after")
+    def _judge_preview_within_screen(self):
+        # Превью второй ступени — уменьшенная копия превью первой (FR-3 п.2): крупнее оно не станет, а ключ кэша,
+        # оценка и шапка отчёта показали бы размер, которого в запросах нет.
+        if self.judge.preview_px > self.screen.preview_px:
+            raise ConfigError(f"cloud.judge.preview_px ({self.judge.preview_px}) больше cloud.screen.preview_px "
+                              f"({self.screen.preview_px}): превью второй ступени и сборки — уменьшенная копия превью "
+                              "первой ступени. Увеличьте cloud.screen.preview_px или уменьшите cloud.judge.preview_px.")
+        return self
+
     @field_validator("pricing", mode="before")
     @classmethod
     def _merge_default_pricing(cls, v):

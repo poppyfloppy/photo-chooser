@@ -6,6 +6,7 @@ from pathlib import Path
 
 from photo_chooser.config import Theme
 from photo_chooser.export import ExportedPosts, ExportedShot
+from photo_chooser.judge.cost import TokenUsage
 from photo_chooser.models import Asset
 from photo_chooser.select import ShotFacts
 
@@ -40,13 +41,26 @@ class ThemeStats:
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (файл, причина) — пропущенные до отбора
     sent_to_compose: int = 0  # кандидатов в запросе сборки постов (FR-4.1)
     usd_compose: float = 0.0
-    cache_write_tokens: int = 0  # кэш мета-блока второй ступени и сборки темы (§9)
-    cache_read_tokens: int = 0
+    tokens_screen: TokenUsage = TokenUsage()  # общие на запуск (FR-6.3)
+    tokens_judge: TokenUsage = TokenUsage()  # по теме
+    tokens_compose: TokenUsage = TokenUsage()
+    time_screen_s: float = 0.0  # за запуск, общее на все темы
+    time_judge_s: float = 0.0
+    time_compose_s: float = 0.0
 
 
 def stage_line(model: str, effort: str, preview_px: int) -> str:
     """Настройки ступени в шапке отчёта (FR-6.3, D18), чтобы прогоны было с чем сравнивать."""
     return f"{model}, {effort}, {preview_px} px"
+
+
+def _tokens(u: TokenUsage) -> str:
+    return f"вход {u.input / 1000:.1f}, выход {u.output / 1000:.1f}"
+
+
+def _duration(seconds: float) -> str:
+    m, s = divmod(round(seconds), 60)
+    return f"{m}:{s:02d}"
 
 
 def _cell(text: str) -> str:
@@ -156,8 +170,13 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
               f"вторая ступень ${stats.usd_judge:.4f}, сборка ${stats.usd_compose:.4f} (по теме); "
               f"накоплено по альбому ${stats.usd_album_total:.2f}"]
     if header.judge_stage is not None:
-        lines.append(f"- Кэш мета-блока (вторая ступень и сборка): записано {stats.cache_write_tokens / 1000:.1f} "
-                     f"тыс., прочитано {stats.cache_read_tokens / 1000:.1f} тыс. токенов")
+        cached = stats.tokens_judge + stats.tokens_compose
+        lines += [f"- Токены, тыс.: первая ступень — {_tokens(stats.tokens_screen)} (общие на запуск); "
+                  f"вторая ступень — {_tokens(stats.tokens_judge)}; сборка — {_tokens(stats.tokens_compose)}",
+                  f"- Кэш мета-блока (вторая ступень и сборка): записано {cached.cache_write / 1000:.1f} тыс., "
+                  f"прочитано {cached.cache_read / 1000:.1f} тыс. токенов",
+                  f"- Время запуска: первая ступень {_duration(stats.time_screen_s)}, вторая ступень "
+                  f"{_duration(stats.time_judge_s)}, сборка {_duration(stats.time_compose_s)} (общее на все темы)"]
     lines.append("")
     skipped = [(a.filename, reason) for a, reason in posts.failed] + list(stats.skipped)
     if skipped:
