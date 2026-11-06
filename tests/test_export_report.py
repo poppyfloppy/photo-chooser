@@ -110,7 +110,7 @@ def _empty_posts(tmp_path):
 
 def test_report_no_cloud_header_and_summary(tmp_path):
     path = tmp_path / "report.md"
-    header = ReportHeader(screen_model=None, model=None, effort=None, prompt_versions=None, run_at=NOW,
+    header = ReportHeader(screen_stage=None, judge_stage=None, prompt_versions=None, run_at=NOW,
                           warnings=["Режим без облака: запрос темы не учитывается"], album="Egypt.26")
     write_report(path, Theme(name="Гиза", query="пирамиды"), header, _empty_posts(tmp_path), {}, _stats())
     text = path.read_text(encoding="utf-8")
@@ -124,20 +124,20 @@ CACHE_LINE = "- Кэш мета-блока (вторая ступень и сб�
 
 
 def test_report_cache_line(tmp_path):
-    cloud = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+    cloud = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, medium, 768 px",
                          prompt_versions="screen-4, judge-7, compose-5", run_at=NOW, album="Egypt.26")
     path = tmp_path / "report.md"
     stats = _stats(cache_write_tokens=4500, cache_read_tokens=36000)
     write_report(path, Theme(name="Гиза", query="пирамиды"), cloud, _empty_posts(tmp_path), {}, stats)
     lines = path.read_text(encoding="utf-8").splitlines()
     assert lines[lines.index(CACHE_LINE) - 1].startswith("- Стоимость:")
-    local = ReportHeader(screen_model=None, model=None, effort=None, prompt_versions=None, run_at=NOW)
+    local = ReportHeader(screen_stage=None, judge_stage=None, prompt_versions=None, run_at=NOW)
     write_report(path, Theme(name="Гиза", query="пирамиды"), local, _empty_posts(tmp_path), {}, stats)
     assert "Кэш мета-блока" not in path.read_text(encoding="utf-8")
 
 
 def test_report_cloud_header_and_style_line(tmp_path):
-    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+    header = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, medium, 768 px",
                           prompt_versions="screen-2, judge-4/style-ab12cd34, compose-1", run_at=NOW, warnings=[],
                           album="Egypt.26", style="style.md от 2026-11-01, отпечаток ab12cd34, скриншотов: лента 2, "
                                                   "stories 2")
@@ -145,7 +145,8 @@ def test_report_cloud_header_and_style_line(tmp_path):
     write_report(path, Theme(name="Гиза", query="пирамиды"), header, _empty_posts(tmp_path), {}, _stats())
     text = path.read_text(encoding="utf-8")
     assert "claude-haiku-5-5" in text and "claude-opus-5-5" in text and "без облака" not in text
-    assert "effort: medium" in text and "screen-2, judge-4/style-ab12cd34, compose-1" in text
+    assert "вторая ступень и сборка: claude-opus-5-5, medium, 768 px" in text
+    assert "screen-2, judge-4/style-ab12cd34, compose-1" in text
     assert "- Стиль: style.md от 2026-11-01, отпечаток ab12cd34, скриншотов: лента 2, stories 2" in text
 
 
@@ -231,7 +232,7 @@ def test_report_posts_tables(tmp_path):
                   [StoryPick(a[3], "best", ""), StoryPick(a[4], "interesting", "рассказать о ладье Хеопса")])
     exported = export_posts(lib, posts, tmp_path / "theme", tmp_path / "tmp", AppConfig())
     facts = {x.uuid: ShotFacts(8, False, f"Причина {x.uuid}", "до 4:5: справа", "до 9:16: центр") for x in a}
-    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+    header = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, medium, 768 px",
                           prompt_versions="screen-2, judge-4, compose-1", run_at=NOW, warnings=[], album="Egypt.26")
     path = tmp_path / "report.md"
     write_report(path, Theme(name="Гиза", query="пирамиды"), header, exported, facts, _posts_stats())
@@ -248,7 +249,7 @@ def test_report_posts_tables(tmp_path):
 
 def test_report_fallback_warning_and_empty_posts(tmp_path):
     exported = export_posts(FakeLibrary([], {}, {}), Posts([], []), tmp_path / "theme", tmp_path / "tmp", AppConfig())
-    header = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+    header = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, medium, 768 px",
                           prompt_versions="screen-2, judge-4, compose-1", run_at=NOW,
                           warnings=["Сборка не удалась — разложено по оценкам (refusal)"], album="Egypt.26")
     path = tmp_path / "report.md"
@@ -260,9 +261,9 @@ def test_report_fallback_warning_and_empty_posts(tmp_path):
 def test_report_explains_scores(tmp_path):
     # приёмка 0.3: колонка «Лента / stories» была непонятна, а «Причину» принимали за решение сборки
     exported = export_posts(FakeLibrary([], {}, {}), Posts([], []), tmp_path / "theme", tmp_path / "tmp", AppConfig())
-    cloud = ReportHeader(screen_model="claude-haiku-5-5", model="claude-opus-5-5", effort="medium",
+    cloud = ReportHeader(screen_stage="claude-haiku-5-5, medium, 1024 px", judge_stage="claude-opus-5-5, medium, 768 px",
                          prompt_versions="v", run_at=NOW, warnings=[], album="Egypt.26")
-    local = ReportHeader(screen_model=None, model=None, effort=None, prompt_versions=None, run_at=NOW, warnings=[])
+    local = ReportHeader(screen_stage=None, judge_stage=None, prompt_versions=None, run_at=NOW, warnings=[])
     theme = Theme(name="Гиза", query="пирамиды")
     write_report(tmp_path / "cloud.md", theme, cloud, exported, {}, _posts_stats())
     write_report(tmp_path / "local.md", theme, local, exported, {}, _posts_stats())
@@ -270,3 +271,18 @@ def test_report_explains_scores(tmp_path):
             "а не решение сборки.") in (tmp_path / "cloud.md").read_text(encoding="utf-8")
     assert "Оценка — локальная оценка качества 0–1" in (tmp_path / "local.md").read_text(encoding="utf-8")
 
+
+
+def test_report_header_stage_lines(tmp_path):
+    from photo_chooser.report import stage_line
+
+    assert stage_line("claude-opus-5-5", "high", 768) == "claude-opus-5-5, high, 768 px"
+    header = ReportHeader(screen_stage=stage_line("claude-haiku-5-5", "medium", 1024),
+                          judge_stage=stage_line("claude-opus-5-5", "high", 768),
+                          prompt_versions="screen-4, judge-7, compose-5", run_at=NOW)
+    path = tmp_path / "report.md"
+    write_report(path, Theme(name="Гиза", query="пирамиды"), header, _empty_posts(tmp_path), {}, _stats())
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert ("- Первая ступень: claude-haiku-5-5, medium, 1024 px; вторая ступень и сборка: claude-opus-5-5, "
+            "high, 768 px") in lines
+    assert not any(line.startswith("- effort:") for line in lines)

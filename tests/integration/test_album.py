@@ -126,6 +126,6 @@ def test_haiku_run_on_test_album(library, tmp_path):
     outcome = result.themes[0]
     assert outcome.error is None
     report = outcome.report_path.read_text(encoding="utf-8")
-    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}, {JUDGE_PROMPT_VERSION}" in report
+    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}/" in report and f"{JUDGE_PROMPT_VERSION}/" in report
     assert result.album_spend_usd > 0
     assert cache.album_spend(library.find_album(ALBUM).uuid) == pytest.approx(result.album_spend_usd)

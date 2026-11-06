@@ -191,12 +191,12 @@ def _parse_group(response, uuids: list[str], output_model: type[BaseModel], conv
     return GroupResult(items=items, unjudged=[u for u in uuids if u not in seen], refused=False, usage=usage)
 
 
-def _check_group_price(groups: list[list[Asset]], cfg: CloudCfg, extra_tokens: int = 0) -> None:
+def _check_group_price(groups: list[list[Asset]], long_side: int, extra_tokens: int = 0) -> None:
     for g in groups:
-        tokens = group_input_tokens([(a.width, a.height) for a in g], cfg.preview_long_side_px) + extra_tokens
+        tokens = group_input_tokens([(a.width, a.height) for a in g], long_side) + extra_tokens
         if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
             raise ValueError(f"Группа из {len(g)} превью ≈ {tokens} входных токенов — больше ценового порога "
-                             f"{HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.group_size или preview_long_side_px.")
+                             f"{HAIKU_PRICE_LIMIT_TOKENS}. Уменьшите cloud.group_size или preview_px ступени.")
 
 
 def _merge(outcome: StageOutcome, result: GroupResult, usd: float, lock: threading.Lock) -> None:
@@ -210,8 +210,12 @@ def _merge(outcome: StageOutcome, result: GroupResult, usd: float, lock: threadi
 
 
 class ScreenRunner:
-    def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes]):
-        self.model, self.effort, self.preview = model, effort, preview
+    def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes], preview_px: int = 1024):
+        self.model, self.effort, self.preview, self.preview_px = model, effort, preview, preview_px
+
+    @property
+    def version(self) -> str:
+        return cache_version(SCREEN_PROMPT_VERSION, self.effort, self.preview_px)
 
     def request(self, album_title: str, themes: list[Theme], group: list[Asset], custom_id: str) -> ModelRequest:
         listing = "\n".join(f"{n}. {theme_text(t)}" for n, t in enumerate(themes, 1))
@@ -254,19 +258,21 @@ def reference_content(style: "StyleContext | None") -> list[dict]:
     return content
 
 
-def judge_prompt_version(style: "StyleContext | None") -> str:
-    """Версия промпта второй ступени для ключа кэша: со стилем в неё входит отпечаток профиля (FR-9.3)."""
-    return JUDGE_PROMPT_VERSION if style is None else f"{JUDGE_PROMPT_VERSION}/style-{style.fingerprint}"
+def cache_version(base: str, effort: str, preview_px: int, style: "StyleContext | None" = None) -> str:
+    """Версия промпта для ключа кэша ступени (FR-9.3, D18): effort и размер превью меняют ответ модели, у второй
+    ступени — ещё отпечаток профиля стиля."""
+    return f"{base}/{effort}/{preview_px}px" + (f"/style-{style.fingerprint}" if style else "")
 
 
 class JudgeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, preview_px: int = 768):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.preview_px = preview_px
 
     @property
     def prompt_version(self) -> str:
-        return judge_prompt_version(self.style)
+        return cache_version(JUDGE_PROMPT_VERSION, self.effort, self.preview_px, self.style)
 
     @property
     def extra_input_tokens(self) -> int:
@@ -304,7 +310,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
     key = themes_key(album_title, themes)
     cached, todo = {}, []
     for a in assets:
-        s = cache.get_screening(a.uuid, key, runner.model, SCREEN_PROMPT_VERSION)
+        s = cache.get_screening(a.uuid, key, runner.model, runner.version)
         if s is None:
             todo.append(a)
         else:
@@ -313,7 +319,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
     groups = [todo[i:i + cfg.group_size] for i in range(0, len(todo), cfg.group_size)]
     log(f"Первая ступень ({runner.model}): {len(assets)} снимков, из кэша {len(cached)}, групп {len(groups)}")
     price = price_for(cfg, runner.model)
-    _check_group_price(groups, cfg)
+    _check_group_price(groups, cfg.screen.preview_px)
     outcome = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0, from_cache=len(cached))
     lock = threading.Lock()
 
@@ -322,7 +328,7 @@ def run_screen(runner: ScreenRunner, transport: Transport, cache: Cache, album_t
 
         def handle(response) -> None:
             result = runner.parse(response, themes, uuids)
-            cache.put_screenings(result.items, key, runner.model, SCREEN_PROMPT_VERSION)
+            cache.put_screenings(result.items, key, runner.model, runner.version)
             usd = usage_usd(result.usage, price)
             cache.add_spend(album_uuid, runner.model, usd)
             _merge(outcome, result, usd, lock)
@@ -368,7 +374,7 @@ def run_judge(runner: JudgeRunner, transport: Transport, cache: Cache, tasks: li
                 cached[a.uuid] = j
         groups = make_groups(todo, t.order, cfg.group_size)
         log(f"  «{t.theme.name}»: кандидатов {len(t.assets)}, из кэша {len(cached)}, групп {len(groups)}")
-        _check_group_price(groups, cfg, runner.extra_input_tokens)
+        _check_group_price(groups, cfg.judge.preview_px, runner.extra_input_tokens)
         outcome = outcomes[key] = StageOutcome(results=dict(cached), unjudged=[], sent=len(todo), usd=0.0,
                                                from_cache=len(cached))
         jobs += [job(key, t.theme, n, g, outcome) for n, g in enumerate(groups, 1)]
@@ -411,8 +417,13 @@ def _compose_style_system(system: str, style: "StyleContext | None") -> str:
 
 class ComposeRunner:
     def __init__(self, model: str, effort: str, preview: Callable[[Asset], bytes],
-                 style: "StyleContext | None" = None):
+                 style: "StyleContext | None" = None, preview_px: int = 768):
         self.model, self.effort, self.preview, self.style = model, effort, preview, style
+        self.preview_px = preview_px
+
+    @property
+    def version(self) -> str:
+        return cache_version(COMPOSE_PROMPT_VERSION, self.effort, self.preview_px)
 
     def request(self, theme: Theme, cands: list[Asset], facts: dict[str, ShotFacts], limits: PostsCfg,
                 custom_id: str) -> ModelRequest:
@@ -485,7 +496,7 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
             usd = usage_usd(result.usage, price)
             cache.add_spend(album_uuid, runner.model, usd)
             if result.output is not None and _answer_known(result.output, ids):
-                cache.put_composition(key, runner.model, COMPOSE_PROMPT_VERSION, fingerprint,
+                cache.put_composition(key, runner.model, runner.version, fingerprint,
                                       result.output.model_dump_json())
             with lock:
                 answers[key] = (result, usd)
@@ -504,13 +515,13 @@ def run_compose(runner: ComposeRunner, transport: Transport, cache: Cache, tasks
             continue
         ids = {f"c{i:02d}": a for i, a in enumerate(t.cands, 1)}
         fingerprint = compose_input_fingerprint(t.cands, t.facts, cfg.posts, runner.style)
-        cached = cache.get_composition(key, runner.model, COMPOSE_PROMPT_VERSION, fingerprint)
+        cached = cache.get_composition(key, runner.model, runner.version, fingerprint)
         if cached is not None:
             log(f"  «{t.theme.name}»: сборка из кэша")
             posts = validate_composition(ComposeOutput.model_validate_json(cached), ids, cfg.posts)
             outcomes[key] = ComposeOutcome(posts=posts, usd=0.0, from_cache=True, refused=False)
             continue
-        tokens = (group_input_tokens([(a.width, a.height) for a in t.cands], cfg.cloud.preview_long_side_px)
+        tokens = (group_input_tokens([(a.width, a.height) for a in t.cands], cfg.cloud.judge.preview_px)
                   + COMPOSE_LABEL_TOKENS * len(t.cands) + (runner.style.extra_tokens if runner.style else 0))
         if tokens >= HAIKU_PRICE_LIMIT_TOKENS:
             raise ValueError(f"Запрос сборки из {len(t.cands)} превью ≈ {tokens} входных токенов — больше ценового "

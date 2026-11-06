@@ -1,6 +1,6 @@
 import pytest
 
-from photo_chooser.config import CloudCfg, Price
+from photo_chooser.config import CloudCfg, JudgeCfg, Price, ScreenCfg
 from photo_chooser.judge.cost import (
     BudgetExceeded,
     TokenUsage,
@@ -24,11 +24,11 @@ def test_estimate_run_counts_screen_once_and_judge_per_theme():
     # превью 1024×768 → 1049 токенов; накладные 500 на группу из 20
     # первая ступень: 1000×1049 + 50×500 = 1 074 000 вход, 105 000 выход → 0.1074 + 0.0525
     # вторая на тему: 100×1049 + 5×500 = 107 400 вход, 8 000 выход
-    haiku = estimate_run_usd(1000, [100, 100], cfg, "claude-haiku-5-5", "claude-haiku-5-5")
+    haiku = estimate_run_usd(1000, [100, 100], cfg, ScreenCfg(), JudgeCfg(preview_px=1024))
     assert haiku == pytest.approx(0.1599 + 2 * (0.01074 + 0.004))
-    opus_judge = estimate_run_usd(1000, [100, 100], cfg, "claude-haiku-5-5", "claude-opus-5-5")
+    opus_judge = estimate_run_usd(1000, [100, 100], cfg, ScreenCfg(), JudgeCfg(model="claude-opus-5-5", preview_px=1024))
     assert opus_judge == pytest.approx(0.1599 + 2 * (0.4296 + 0.16))
-    assert estimate_run_usd(0, [], cfg, "claude-haiku-5-5", "claude-haiku-5-5") == 0.0
+    assert estimate_run_usd(0, [], cfg, ScreenCfg(), JudgeCfg(preview_px=1024)) == 0.0
 
 
 def test_usage_usd_haiku():
@@ -90,14 +90,23 @@ def test_check_budget():
 
 def test_estimate_adds_judge_extra_tokens():
     cfg = CloudCfg()
-    plain = estimate_run_usd(0, [100], cfg, "claude-haiku-5-5", "claude-opus-5-5")
-    styled = estimate_run_usd(0, [100], cfg, "claude-haiku-5-5", "claude-opus-5-5", judge_extra_tokens=4000)
+    plain = estimate_run_usd(0, [100], cfg, ScreenCfg(), JudgeCfg(model="claude-opus-5-5", preview_px=1024))
+    styled = estimate_run_usd(0, [100], cfg, ScreenCfg(), JudgeCfg(model="claude-opus-5-5", preview_px=1024), judge_extra_tokens=4000)
     assert styled - plain == pytest.approx(5 * 4000 * 4.00 / 1e6)
 
 
 def test_estimate_includes_compose():
     cfg = CloudCfg()
     expected = (30 * (1049 + 60) + 500) * 4.00 / 1e6 + 1500 * 20.00 / 1e6
-    assert estimate_run_usd(0, [], cfg, "claude-haiku-5-5", "claude-opus-5-5", n_compose=[30, 0]) == \
+    assert estimate_run_usd(0, [], cfg, ScreenCfg(), JudgeCfg(model="claude-opus-5-5", preview_px=1024), n_compose=[30, 0]) == \
         pytest.approx(expected)
 
+
+
+def test_estimate_uses_stage_preview_sizes():
+    cfg, screen = CloudCfg(), ScreenCfg()
+    small = estimate_run_usd(1000, [100], cfg, screen, JudgeCfg(preview_px=512))
+    large = estimate_run_usd(1000, [100], cfg, screen, JudgeCfg(preview_px=1024))
+    assert small < large
+    assert estimate_run_usd(1000, [], cfg, screen, JudgeCfg(preview_px=512)) == \
+        estimate_run_usd(1000, [], cfg, screen, JudgeCfg(preview_px=1024))

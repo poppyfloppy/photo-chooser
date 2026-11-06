@@ -274,3 +274,10 @@ def test_batch_flag_removed(env):
                                      "--batch"])
     assert result.exit_code == 2
     assert "No such option" in result.output
+
+
+def test_style_command_uses_judge_effort(tmp_path, monkeypatch):
+    client, _ = _style_env(tmp_path, monkeypatch)
+    result = runner.invoke(cli.app, ["style", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert client.calls[0]["output_config"]["effort"] == "high"

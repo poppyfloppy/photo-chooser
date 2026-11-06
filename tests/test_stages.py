@@ -21,7 +21,7 @@ from fakes import (
     system_text,
 )
 from photo_chooser.cache import Cache
-from photo_chooser.config import CloudCfg, Theme, themes_key
+from photo_chooser.config import CloudCfg, JudgeCfg, Theme, themes_key
 from photo_chooser.judge import transport
 from photo_chooser.judge.cost import TokenUsage, usage_usd
 from photo_chooser.judge.prompts import (
@@ -159,7 +159,7 @@ def test_screen_cache_keyed_by_theme_set(tmp_path):
     screen_run(client, runner, cache, "Egypt.26", "album-1", THEMES[:3], assets, cfg)
     assert len(client.calls) == 2
     key = themes_key("Egypt.26", THEMES[:2])
-    assert cache.get_screening("U000", key, HAIKU, SCREEN_PROMPT_VERSION) == first.results["U000"]
+    assert cache.get_screening("U000", key, HAIKU, runner.version) == first.results["U000"]
 
 
 def test_screen_groups_follow_capture_time(tmp_path, monkeypatch):
@@ -251,7 +251,7 @@ def test_parallel_failure_keeps_completed_groups(tmp_path):
     assert isinstance(outcome.error, anthropic.APIStatusError)
     paid = len(client.calls) - 1
     assert cache.album_spend("album-1") == pytest.approx(paid * GROUP_USD)
-    cached = [a for a in assets if cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, JUDGE_PROMPT_VERSION)]
+    cached = [a for a in assets if cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, f"{JUDGE_PROMPT_VERSION}/medium/768px")]
     assert len(cached) == paid * 20
 
 
@@ -304,7 +304,7 @@ def test_opus_and_sonnet_use_server_side_fallbacks(model):
 
 def test_group_over_haiku_price_threshold_rejected(tmp_path):
     client = FakeClient(judge_handler())
-    cfg = CloudCfg(group_size=100)
+    cfg = CloudCfg(group_size=100, judge=JudgeCfg(preview_px=1024))  # пороги считались на превью 1024 px
     with pytest.raises(ValueError):
         judge_one(client, JudgeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "c.sqlite"), THEMES[0],
                   _assets(100), {}, cfg, "album-1")
@@ -348,7 +348,7 @@ def test_interrupt_keeps_completed_groups(tmp_path, monkeypatch):
         judge_one(client, JudgeRunner(HAIKU, "medium", _preview), cache, THEMES[0], assets, {}, CloudCfg(), "album-1")
     assert len(client.calls) == 3
     assert cache.album_spend("album-1") == pytest.approx(3 * GROUP_USD)
-    assert all(cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, JUDGE_PROMPT_VERSION) for a in assets)
+    assert all(cache.get_judgment(a.uuid, THEMES[0].key(), HAIKU, f"{JUDGE_PROMPT_VERSION}/medium/768px") for a in assets)
 
 
 def test_judge1_cache_not_reused_after_rubric_change(tmp_path):
@@ -409,7 +409,7 @@ def test_judge_with_style_request():
     assert [base64.b64decode(content[i]["source"]["data"]) for i in (1, 3)] == [b"REF1", b"REF2"]
     assert content[4]["text"] == "id: p01 (horizontal)"
     assert ids_in(content) == ["p01", "p02"] and _sent_uuids(call)[2:] == ["U000", "U001"]
-    assert runner.prompt_version == f"{JUDGE_PROMPT_VERSION}/style-ab12cd34" and runner.extra_input_tokens == 3500
+    assert runner.prompt_version == f"{JUDGE_PROMPT_VERSION}/medium/768px/style-ab12cd34" and runner.extra_input_tokens == 3500
 
 
 def test_judge_cache_keyed_by_style_fingerprint(tmp_path):
@@ -431,7 +431,7 @@ def test_judge_without_style_unchanged():
     client = FakeClient(judge_handler())
     runner = JudgeRunner(HAIKU, "medium", _preview)
     judge_group(client, runner, THEMES[0], _assets(1))
-    assert runner.prompt_version == JUDGE_PROMPT_VERSION and runner.extra_input_tokens == 0
+    assert runner.prompt_version == f"{JUDGE_PROMPT_VERSION}/medium/768px" and runner.extra_input_tokens == 0
     assert system_text(client.calls[0]) == JUDGE_SYSTEM_PROMPT
     assert client.calls[0]["messages"][0]["content"][0]["text"] == "id: p01 (horizontal)"
 
@@ -439,7 +439,7 @@ def test_judge_without_style_unchanged():
 def test_style_tokens_count_toward_price_threshold(tmp_path):
     # 80 превью ≈ 84 тыс. токенов — меньше порога; со стилем на 20 тыс. — уже больше
     client = FakeClient(judge_handler())
-    cfg = CloudCfg(group_size=80)
+    cfg = CloudCfg(group_size=80, judge=JudgeCfg(preview_px=1024))
     judge_one(client, JudgeRunner(HAIKU, "medium", _preview), Cache(tmp_path / "a.sqlite"), THEMES[0], _assets(80),
               {}, cfg, "album-1")
     from dataclasses import replace
@@ -632,6 +632,14 @@ def test_screen_request_has_no_cache_control():
 
 def test_cache_does_not_change_cache_keys():
     from photo_chooser.judge.prompts import COMPOSE_PROMPT_VERSION
-    from photo_chooser.judge.stages import judge_prompt_version
+    from photo_chooser.judge.stages import cache_version
 
-    assert judge_prompt_version(None) == "judge-7" and COMPOSE_PROMPT_VERSION == "compose-5"
+    assert cache_version(JUDGE_PROMPT_VERSION, "high", 768) == "judge-7/high/768px"
+    assert COMPOSE_PROMPT_VERSION == "compose-5"
+
+
+def test_cache_version_format():
+    from photo_chooser.judge.stages import cache_version
+
+    assert cache_version("judge-8", "high", 768, _style()) == "judge-8/high/768px/style-ab12cd34"
+    assert cache_version("judge-8", "high", 768) == "judge-8/high/768px"

@@ -13,9 +13,8 @@ from photo_chooser.select import ShotFacts
 
 @dataclass
 class ReportHeader:
-    screen_model: str | None  # None — без облака
-    model: str | None
-    effort: str | None
+    screen_stage: str | None  # «модель, effort, размер превью» первой ступени (stage_line); None — не работала
+    judge_stage: str | None  # то же для второй ступени и сборки; None — без облака
     prompt_versions: str | None
     run_at: datetime
     warnings: list[str] = field(default_factory=list)
@@ -43,6 +42,11 @@ class ThemeStats:
     usd_compose: float = 0.0
     cache_write_tokens: int = 0  # кэш мета-блока второй ступени и сборки темы (§9)
     cache_read_tokens: int = 0
+
+
+def stage_line(model: str, effort: str, preview_px: int) -> str:
+    """Настройки ступени в шапке отчёта (FR-6.3, D18), чтобы прогоны было с чем сравнивать."""
+    return f"{model}, {effort}, {preview_px} px"
 
 
 def _cell(text: str) -> str:
@@ -89,11 +93,11 @@ def _header_lines(theme: Theme, header: ReportHeader) -> list[str]:
         lines.append(f"- Альбом: «{header.album}»")
     lines.append(f"- Тема: {_theme_line(theme)}")
     lines.append(f"- Запуск: {header.run_at:%Y-%m-%d %H:%M}")
-    if header.screen_model is None and header.model is None:
+    if header.screen_stage is None and header.judge_stage is None:
         lines.append("- Модели: без облака (только локальные оценки)")
     else:
-        lines.append(f"- Первая ступень: {header.screen_model or '—'}; вторая ступень и сборка: {header.model or '—'}")
-        lines.append(f"- effort: {header.effort or '—'}")
+        lines.append(f"- Первая ступень: {header.screen_stage or '—'}; вторая ступень и сборка: "
+                     f"{header.judge_stage or '—'}")
         lines.append(f"- Версия промпта: {header.prompt_versions or '—'}")
         if header.style:
             lines.append(f"- Стиль: {header.style}")
@@ -105,7 +109,7 @@ def _header_lines(theme: Theme, header: ReportHeader) -> list[str]:
 def write_report(path: Path, theme: Theme, header: ReportHeader, posts: ExportedPosts,
                        facts: dict[str, ShotFacts], stats: ThemeStats) -> None:
     lines = _header_lines(theme, header)
-    lines += [SCORES_NOTE_LOCAL if header.model is None else SCORES_NOTE, ""]
+    lines += [SCORES_NOTE_LOCAL if header.judge_stage is None else SCORES_NOTE, ""]
     lines += ["## Лента", ""]
     if not posts.carousels:
         lines += ["Каруселей нет — сильных кадров для ленты не нашлось.", ""]
@@ -151,7 +155,7 @@ def write_report(path: Path, theme: Theme, header: ReportHeader, posts: Exported
               f"- Стоимость: первая ступень ${stats.usd_screen:.4f} (общая на запуск), "
               f"вторая ступень ${stats.usd_judge:.4f}, сборка ${stats.usd_compose:.4f} (по теме); "
               f"накоплено по альбому ${stats.usd_album_total:.2f}"]
-    if header.model is not None:
+    if header.judge_stage is not None:
         lines.append(f"- Кэш мета-блока (вторая ступень и сборка): записано {stats.cache_write_tokens / 1000:.1f} "
                      f"тыс., прочитано {stats.cache_read_tokens / 1000:.1f} тыс. токенов")
     lines.append("")

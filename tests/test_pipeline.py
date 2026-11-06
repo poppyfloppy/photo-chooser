@@ -204,7 +204,7 @@ def test_screen_runs_once_for_all_themes(tmp_path):
         assert outcome.error is None
         assert len(_feed_files(outcome.report_path.parent)) == 3
     report = result.themes[0].report_path.read_text(encoding="utf-8")
-    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}, {JUDGE_PROMPT_VERSION}" in report
+    assert "claude-haiku-5-5" in report and f"{SCREEN_PROMPT_VERSION}/medium/1024px, {JUDGE_PROMPT_VERSION}/high/768px" in report
     spent = cache.album_spend("ALB")
     assert spent == pytest.approx(15 * (20_000 * 0.10 / 1e6 + 2_000 * 0.50 / 1e6))  # 3 + 9 + сборка по 3 темам
     last_report = result.themes[-1].report_path.read_text(encoding="utf-8")  # накоплено на момент отчёта
@@ -467,7 +467,7 @@ def test_run_with_style_sends_profile_and_marks_header(tmp_path):
     assert "Мягкий тёплый свет." not in client.calls_for(ScreenOutput)[0]["system"]
     report = result.themes[0].report_path.read_text(encoding="utf-8")
     assert "- Стиль: style.md от " in report and "скриншотов: лента 1, stories 0" in report
-    assert f"{JUDGE_PROMPT_VERSION}/style-" in report
+    assert f"{JUDGE_PROMPT_VERSION}/high/768px/style-" in report
 
 
 def test_run_without_profile_warns(tmp_path):
@@ -639,3 +639,68 @@ def test_dry_run_estimate_includes_interesting_window(tmp_path):
     small, _ = _run(album, _trip(GIZA), no_extra, Cache(tmp_path / "a.sqlite"), dry_run=True)
     large, _ = _run(album, _trip(GIZA), with_extra, Cache(tmp_path / "b.sqlite"), dry_run=True)
     assert large.estimate_usd > small.estimate_usd
+
+
+# --- настройки ступеней (D18) ----------------------------------------------------------------------
+
+def _long_sides(call) -> set[int]:
+    import base64
+    import io
+
+    from PIL import Image
+
+    return {max(Image.open(io.BytesIO(base64.b64decode(b["source"]["data"]))).size)
+            for b in call["messages"][0]["content"] if b["type"] == "image"}
+
+
+def test_judge_and_compose_get_judge_sized_previews(tmp_path):
+    from photo_chooser.config import CloudCfg, JudgeCfg, ScreenCfg
+
+    album = Album(tmp_path, n=5)
+    cfg = AppConfig(output_dir=tmp_path / "out", posts=PostsCfg(carousel_size=3, stories=5),
+                    cloud=CloudCfg(screen=ScreenCfg(preview_px=320), judge=JudgeCfg(preview_px=160)))
+    _, client = _run(album, _trip(GIZA), cfg, Cache(tmp_path / "c.sqlite"))
+    assert {s for c in client.calls_for(ScreenOutput) for s in _long_sides(c)} == {320}
+    assert {s for c in client.calls_for(JudgeOutput) + client.calls_for(ComposeOutput) for s in _long_sides(c)} == {160}
+
+
+def test_model_flag_overrides_judge_model(tmp_path):
+    album = Album(tmp_path, n=5)
+    _, client = _run(album, _trip(GIZA), _cfg(tmp_path), Cache(tmp_path / "c.sqlite"), model="claude-sonnet-5-5")
+    assert {c["model"] for c in client.calls_for(ScreenOutput)} == {"claude-haiku-5-5"}
+    assert {c["model"] for c in client.calls_for(JudgeOutput) + client.calls_for(ComposeOutput)} == \
+        {"claude-sonnet-5-5"}
+
+
+def _stage_cfg(tmp_path, **cloud):
+    from photo_chooser.config import CloudCfg
+
+    return AppConfig(output_dir=tmp_path / "out", posts=PostsCfg(carousel_size=3, stories=5), cloud=CloudCfg(**cloud))
+
+
+def test_effort_change_recomputes_only_its_stage(tmp_path):
+    from photo_chooser.config import JudgeCfg
+
+    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
+    _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(effort="high")), cache)
+    _, again = _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(effort="medium")), cache)
+    assert again.calls_for(ScreenOutput) == []
+    assert again.calls_for(JudgeOutput) and again.calls_for(ComposeOutput)
+
+
+def test_preview_change_recomputes_judge(tmp_path):
+    from photo_chooser.config import JudgeCfg
+
+    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
+    _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(preview_px=160)), cache)
+    _, again = _run(album, _trip(GIZA), _stage_cfg(tmp_path, judge=JudgeCfg(preview_px=200)), cache)
+    assert again.calls_for(ScreenOutput) == [] and again.calls_for(JudgeOutput)
+
+
+def test_screen_effort_change_recomputes_screen(tmp_path):
+    from photo_chooser.config import ScreenCfg
+
+    album, cache = Album(tmp_path, n=5), Cache(tmp_path / "c.sqlite")
+    _run(album, _trip(GIZA), _stage_cfg(tmp_path), cache)
+    _, again = _run(album, _trip(GIZA), _stage_cfg(tmp_path, screen=ScreenCfg(effort="low")), cache)
+    assert again.calls_for(ScreenOutput)

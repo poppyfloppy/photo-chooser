@@ -7,7 +7,7 @@ import pytest
 from conftest import make_asset
 from fakes import FakeClient, compose_once, compose_one, fake_response, output_model_of, system_text
 from photo_chooser.cache import Cache
-from photo_chooser.config import AppConfig, Theme
+from photo_chooser.config import AppConfig, CloudCfg, JudgeCfg, Theme
 from photo_chooser.judge.prompts import (
     COMPOSE_PROMPT_VERSION,
     COMPOSE_SCREENSHOTS_NOTE,
@@ -184,7 +184,7 @@ def test_compose_over_price_threshold_rejected(tmp_path):
     heavy = replace(_style(), extra_tokens=70_000)
     with pytest.raises(ValueError):
         compose_one(client, ComposeRunner(HAIKU, "medium", _preview, style=heavy), Cache(tmp_path / "c.sqlite"), THEME,
-                    cands, _facts(cands), AppConfig(), "album-1")
+                    cands, _facts(cands), AppConfig(cloud=CloudCfg(judge=JudgeCfg(preview_px=1024))), "album-1")
     assert client.calls == []
 
 
